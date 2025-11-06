@@ -1,12 +1,13 @@
 import fs from "fs";
 import path from "path";
-import https from "https";
 import PDFDocument from "pdfkit";
+import https from "https";
 
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
 import { sanitizeAiText } from "./_core/text";
 
+// DefiniÃƒÂ§ÃƒÂµes de Tipos (mantidas)
 type ResumeExperience = {
   empresa?: string;
   cargo?: string;
@@ -52,6 +53,7 @@ type EnhancedResume = {
   achievements: string[];
 };
 
+// Constantes (mantidas)
 const SOFT_KEYWORDS = [
   "lider",
   "lideranca",
@@ -73,9 +75,11 @@ const SOFT_KEYWORDS = [
   "analitic",
   "aprendiz",
   "autonom",
+  "empatia",
   "inteligencia emocional",
 ];
 
+// FunÃƒÂ§ÃƒÂµes Auxiliares (mantidas)
 const sanitize = (value: string | null | undefined): string =>
   sanitizeAiText(String(value ?? ""));
 
@@ -117,7 +121,7 @@ async function enrichResume(data: ResumeData): Promise<EnhancedResume | null> {
   "softSkills": ["competencia comportamental"],
   "experiences": [
     {
-      "titulo": "Cargo - Empresa",
+      "titulo": "Cargo Ã¢â‚¬â€ Empresa",
       "empresa": "Empresa",
       "periodo": "Periodo formatado",
       "bullets": ["Resultado ou impacto mensuravel", "... (3 a 5 itens)"]
@@ -131,9 +135,10 @@ async function enrichResume(data: ResumeData): Promise<EnhancedResume | null> {
     }
   ],
   "certifications": ["cert"],
-  "languages": ["idioma - nivel"],
+  "languages": ["idioma Ã¢â‚¬â€ nivel"],
   "achievements": ["destaque ou projeto relevante"]
 }
+
 
 Regras:
 - Use portugues brasileiro.
@@ -156,56 +161,6 @@ ${payload}`;
   }
 }
 
-async function enrichResumeStrong(data: ResumeData): Promise<EnhancedResume | null> {
-  try {
-    const payload = JSON.stringify(data, null, 2);
-    const prompt = `Voce e especialista em curriculos premium. Reescreva e estruture os dados a seguir retornando JSON puro valido (UTF-8) no formato:
-{
-  "headline": "frase curta destacando cargo/forca",
-  "summary": "paragrafo com 3-5 frases em voz ativa, cobrindo anos de experiencia, contexto, especialidades, tecnologias chave e impacto",
-  "technicalSkills": ["skill tecnica"],
-  "softSkills": ["competencia comportamental"],
-  "experiences": [
-    {
-      "titulo": "Cargo - Empresa",
-      "empresa": "Empresa",
-      "periodo": "YYYY-YYYY ou 'Atual'",
-      "bullets": [
-        "Resultado/impacto claro com numeros quando houver base (%, tempo, custo, qualidade), incluindo tecnologias e contexto",
-        "Segundo resultado ou responsabilidade chave",
-        "Terceiro item (processos, performance, confiabilidade)",
-        "Quarto item (colaboracao, lideranca, comunicacao)",
-        "Quinto item opcional"
-      ]
-    }
-  ],
-  "education": [
-    { "instituicao": "Nome", "curso": "Curso ou certificacao", "periodo": "Periodo ou status" }
-  ],
-  "certifications": ["Certificacao"],
-  "languages": ["Idioma - nivel"],
-  "achievements": ["Projeto ou destaque relevante com efeito/resultado"]
-}
-
-Regras:
-- Portugues brasileiro; sem jargao vazio; sem invencao de dados.
-- Separar hard/soft skills; derivar soft skills do contexto quando possivel.
-- 3 a 5 bullets por experiencia; focar em impacto e tecnologias.
-- Retorne somente o JSON (sem comentarios ou texto extra).
-
-Dados base:
-${payload}`;
-
-    const response = await invokeLLM({ messages: [{ role: "user", content: prompt }] });
-    const text = String(response.choices?.[0]?.message?.content ?? "").trim();
-    const json = text.replace(/^[^{\[]+/, "").replace(/[^}\]]+$/, "");
-    return JSON.parse(json) as EnhancedResume;
-  } catch (error) {
-    console.warn("[Resume] Falha ao enriquecer dados (strong):", error);
-    return null;
-  }
-}
-
 const splitSkills = (skills: string[] = []): { technical: string[]; soft: string[] } => {
   const technical: string[] = [];
   const soft: string[] = [];
@@ -222,17 +177,17 @@ const splitSkills = (skills: string[] = []): { technical: string[]; soft: string
 
 const buildFallbackExperience = (exp: ResumeExperience): EnhancedExperience => {
   const empresa = sanitize(exp.empresa || "");
-  const cargo = sanitize(exp.cargo || "Experiência");
+  const cargo = sanitize(exp.cargo || "Experiencia");
   const periodo = sanitize(exp.periodo || "");
   const bullets: string[] = [];
 
   exp.responsabilidades?.forEach((item) => {
     const text = sanitize(item);
-    if (text) bullets.push(`Responsável por ${text}`);
+    if (text) bullets.push(`Responsavel por ${text}`);
   });
   exp.resultados?.forEach((item) => {
     const text = sanitize(item);
-    if (text) bullets.push(`Resultados alcançados: ${text}`);
+    if (text) bullets.push(`Resultados alcanÃƒÂ§ados: ${text}`);
   });
 
   if (bullets.length === 0) {
@@ -240,7 +195,7 @@ const buildFallbackExperience = (exp: ResumeExperience): EnhancedExperience => {
   }
 
   return {
-    titulo: [cargo, empresa].filter(hasContent).join(" - ") || cargo,
+    titulo: [cargo, empresa].filter(hasContent).join(" Ã¢â‚¬â€ ") || cargo,
     empresa,
     periodo,
     bullets,
@@ -278,104 +233,7 @@ const buildFallbackResume = (data: ResumeData): EnhancedResume => {
   };
 };
 
-const FONT_SIZES = {
-  NAME: 28,
-  HEADLINE: 14,
-  CONTACT: 10,
-  SECTION_TITLE: 16,
-  SUB_TITLE: 12,
-  BODY: 11,
-};
-
-const HEADER_HEIGHT = 110;
-
-const FONT_DIR = path.resolve(process.cwd(), "assets", "fonts");
-const FONT_FILES = {
-  regular: path.join(FONT_DIR, "NotoSans-Regular.ttf"),
-  bold: path.join(FONT_DIR, "NotoSans-Bold.ttf"),
-  italic: path.join(FONT_DIR, "NotoSans-Italic.ttf"),
-};
-
-const FONT_URLS = {
-  regular: "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
-  bold: "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
-  italic: "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Italic.ttf",
-};
-
-const FONT_NAMES = {
-  regular: "resume-regular",
-  bold: "resume-bold",
-  italic: "resume-italic",
-};
-
-type PdfFonts = {
-  regular: string;
-  bold: string;
-  italic: string;
-};
-
-const FALLBACK_FONTS: PdfFonts = {
-  regular: "Helvetica",
-  bold: "Helvetica-Bold",
-  italic: "Helvetica-Oblique",
-};
-
-type HeaderInfo = {
-  name: string;
-  headline: string;
-  contactLine: string;
-};
-
-async function downloadFile(url: string, destination: string) {
-  await new Promise<void>((resolve, reject) => {
-    const fileStream = fs.createWriteStream(destination);
-
-    const handleError = (error: Error) => {
-      fileStream.close();
-      fs.promises.unlink(destination).catch(() => undefined);
-      reject(error);
-    };
-
-    const request = https.get(url, (response) => {
-      const { statusCode, headers } = response;
-
-      if (statusCode && statusCode >= 300 && statusCode < 400 && headers.location) {
-        response.resume();
-        const redirectUrl = new URL(headers.location, url).toString();
-        fileStream.close();
-        fs.promises.unlink(destination).catch(() => undefined);
-        downloadFile(redirectUrl, destination).then(resolve).catch(reject);
-        return;
-      }
-
-      if (statusCode && statusCode >= 400) {
-        handleError(new Error(`Failed to download font (${statusCode})`));
-        return;
-      }
-
-      response.pipe(fileStream);
-      fileStream.on("finish", () => {
-        fileStream.close();
-        resolve();
-      });
-    });
-
-    request.on("error", handleError);
-  });
-}
-
-async function ensureUtf8Fonts(): Promise<void> {
-  await fs.promises.mkdir(FONT_DIR, { recursive: true });
-  const entries = Object.entries(FONT_FILES) as Array<[keyof typeof FONT_FILES, string]>;
-  for (const [key, filePath] of entries) {
-    try {
-      await fs.promises.access(filePath, fs.constants.R_OK);
-    } catch {
-      const url = FONT_URLS[key];
-      await downloadFile(url, filePath);
-    }
-  }
-}
+// --- Funcoes de Desenho e Estilo ---
 
 const COLORS = {
   PRIMARY: "#005691",
@@ -383,39 +241,6 @@ const COLORS = {
   LIGHT_GRAY: "#9CA3AF",
   BACKGROUND: "#F5F5F5",
   LINE: "#D1D5DB",
-};
-
-const renderHeader = (doc: PDFDocument, fonts: PdfFonts, info: HeaderInfo) => {
-  doc.save();
-  doc.rect(0, 0, doc.page.width, HEADER_HEIGHT).fill(COLORS.PRIMARY);
-  doc.restore();
-
-  const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-
-  doc
-    .fillColor("#FFFFFF")
-    .font(fonts.bold)
-    .fontSize(FONT_SIZES.NAME)
-    .text(info.name, doc.page.margins.left, 26, { width: contentWidth });
-
-  if (hasContent(info.headline)) {
-    doc
-      .font(fonts.regular)
-      .fontSize(FONT_SIZES.HEADLINE)
-      .fillColor("#FFFFFF")
-      .text(info.headline, { width: contentWidth });
-  }
-
-  if (hasContent(info.contactLine)) {
-    doc
-      .font(fonts.regular)
-      .fontSize(FONT_SIZES.CONTACT)
-      .fillColor("#E5E7EB")
-      .text(info.contactLine, doc.page.margins.left, doc.y + 6, { width: contentWidth });
-  }
-
-  doc.y = HEADER_HEIGHT + 28;
-  doc.fillColor(COLORS.SECONDARY);
 };
 
 const drawSectionTitle = (doc: PDFDocument, title: string, fonts: PdfFonts) => {
@@ -519,6 +344,8 @@ const drawTwoColumnList = (doc: PDFDocument, left: string[], right: string[], fo
   doc.moveDown(0.4);
 };
 
+// --- Funcao Principal de Geracao de PDF ---ÃƒÂ§ÃƒÂ£o Principal de GeraÃƒÂ§ÃƒÂ£o de PDF (Modificada para EstÃƒÂ©tica) ---
+
 export async function generateResumePdf(
   userId: number,
   opts?: { job?: { title?: string; company?: string; description?: string; requirements?: string } },
@@ -539,7 +366,7 @@ export async function generateResumePdf(
 
   const dir = path.resolve(process.cwd(), "uploads", "resumes", String(userId));
   await fs.promises.mkdir(dir, { recursive: true });
-  const filename = `${Date.now()}-curriculo.pdf`;
+  const filename = ${Date.now()}-curriculo.pdf;
   const filepath = path.join(dir, filename);
 
   const doc = new PDFDocument({ margin: 54, size: "A4" });
@@ -565,22 +392,38 @@ export async function generateResumePdf(
   const phone = sanitize(extracted.telefone ?? profile?.phone ?? "");
   const location = sanitize(extracted.localizacao ?? profile?.location ?? "");
 
+  const headerHeight = 110;
+  doc.rect(0, 0, doc.page.width, headerHeight).fill(COLORS.PRIMARY);
+
+  doc
+    .fillColor("#FFFFFF")
+    .font(fonts.bold)
+    .fontSize(FONT_SIZES.NAME)
+    .text(nome, doc.page.margins.left, 26, {
+      width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+    });
+
+  if (hasContent(resume.headline)) {
+    doc
+      .font(fonts.regular)
+      .fontSize(FONT_SIZES.HEADLINE)
+      .fillColor("#FFFFFF")
+      .text(resume.headline, {
+        width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+      });
+  }
+
   const contactParts = [email, phone, location].filter(hasContent);
-  const headerInfo: HeaderInfo = {
-    name: nome,
-    headline: resume.headline || "",
-    contactLine: contactParts.join("  |  "),
-  };
+  if (contactParts.length) {
+    doc
+      .font(fonts.regular)
+      .fontSize(FONT_SIZES.CONTACT)
+      .fillColor("#E5E7EB")
+      .text(contactParts.join("  |  "), doc.page.margins.left, doc.y + 6);
+  }
 
-  const applyHeader = () => {
-    renderHeader(doc, fonts, headerInfo);
-  };
-
-  applyHeader();
-
-  doc.on("pageAdded", () => {
-    applyHeader();
-  });
+  doc.y = headerHeight + 28;
+  doc.fillColor(COLORS.SECONDARY);
 
   if (hasContent(resume.summary)) {
     drawSectionTitle(doc, "Resumo Profissional", fonts);
@@ -720,7 +563,7 @@ export async function generateResumePdf(
       .fontSize(FONT_SIZES.BODY)
       .fillColor(COLORS.SECONDARY)
       .text(
-        `Requisitos principais: ${sanitize(opts.job.requirements)}. Currículo preparado para realçar competências técnicas e comportamentais aderentes.`,
+        Requisitos principais: . Currículo preparado para realçar competências técnicas e comportamentais aderentes.,
         {
           lineGap: 4,
           align: "justify",
@@ -737,11 +580,12 @@ export async function generateResumePdf(
 
   return {
     path: filepath,
-    url: `/uploads/resumes/${userId}/${filename}`,
+    url: /uploads/resumes//,
     filename,
   };
 }
 
+// FunÃƒÂ§ÃƒÂµes de ValidaÃƒÂ§ÃƒÂ£o (mantidas)
 export function getMissingResumeFields(data: ResumeData): string[] {
   const missing: string[] = [];
   if (!hasContent(data.nome)) missing.push("nome");
@@ -759,4 +603,54 @@ export async function getResumeCompletionStatus(userId: number) {
   const data = (await extractFromChat(userId)) || {};
   const missing = getMissingResumeFields(data);
   return { complete: missing.length === 0, missing, data };
+}
+// Versao reforcada para garantir texto detalhado e profissional
+async function enrichResumeStrong(data: ResumeData): Promise<EnhancedResume | null> {
+  try {
+    const payload = JSON.stringify(data, null, 2);
+    const prompt = `Voce e especialista em curriculos premium. Reescreva E ESTRUTURE os dados a seguir retornando JSON PURO valido (UTF-8) no formato EXATO:
+{
+  "headline": "frase curta destacando cargo/forca",
+  "summary": "paragrafo com 3-5 frases em voz ativa, cobrindo anos de experiencia, contexto (setor/tamanho), especialidades, tecnologias chave e impacto (melhorias, economia, qualidade)",
+  "technicalSkills": ["skill tecnica"],
+  "softSkills": ["competencia comportamental"],
+  "experiences": [
+    {
+      "titulo": "Cargo - Empresa",
+      "empresa": "Empresa",
+      "periodo": "YYYY-YYYY ou 'Atual'",
+      "bullets": [
+        "Resultado/impacto claro com numeros quando houver base (%, tempo, custo, qualidade), incluindo tecnologias e contexto",
+        "Segundo resultado ou responsabilidade chave",
+        "Terceiro item (processos, performance, confiabilidade)",
+        "Quarto item (colaboracao, lideranÃƒÂ§a, comunicacao)",
+        "Quinto item opcional"
+      ]
+    }
+  ],
+  "education": [
+    { "instituicao": "Nome", "curso": "Curso/Certificacao", "periodo": "Periodo ou status" }
+  ],
+  "certifications": ["Certificacao"],
+  "languages": ["Idioma - nivel"],
+  "achievements": ["Projeto ou destaque com efeito/resultado"]
+}
+
+Regras:
+- Portugues brasileiro; sem jargao vazio; sem invencao de dados, porem você pode detalhar e estruturar mais o que o usuário te falou.
+- Separar hard/soft  skills; derivar soft skills do contexto quando possivel.
+- 3 a 5 bullets por experiencia; focar em impacto e tecnologias.
+- Retorne SOMENTE o JSON (sem comentarios, prefixos ou sufixos).
+
+Dados base:
+${payload}`;
+
+    const response = await invokeLLM({ messages: [{ role: "user", content: prompt }] });
+    const text = String(response.choices?.[0]?.message?.content ?? "").trim();
+    const json = text.replace(/^[^{\[]+/, "").replace(/[^}\]]+$/, "");
+    return JSON.parse(json) as EnhancedResume;
+  } catch (error) {
+    console.warn("[Resume] Falha ao enriquecer dados (strong):", error);
+    return null;
+  }
 }
