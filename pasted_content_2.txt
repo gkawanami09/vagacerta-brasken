@@ -1,0 +1,249 @@
+0) Diretrizes globais para todas as páginas
+
+Prompt base
+
+Você é uma IA de front-end mobile. Gere telas em alta fidelidade e componentes reutilizáveis.
+
+Paleta: primária #75182C; superfície de cards #FFFDF5; texto primário #1C1C1C; texto secundário #5A5A5A; fundo app #FAF9F4; sucesso #2E7D32; alerta #D32F2F; bordas #E6E2D9.
+
+Tokens: raio 14–16 px; sombra suave 8–12 px; spacing 8/12/16/24; toques mínimos 44 px; contraste AA.
+
+Botões: primário sólido #75182C (texto branco), secundário contornado, terciário texto.
+
+Inputs: borda 1 px #E6E2D9, foco com halo #75182C33, rótulo e helper.
+
+Chips/Badges: cantos 16 px, tons da paleta.
+
+Gráficos circulares: anel com track claro e progresso em #75182C, valor central em negrito.
+
+Componentes: AppBar com título centrado, ícone “voltar” quando há navegação hierárquica.
+
+Navegação: Tab bar inferior com 4 itens padrão [Vagas, Relatórios, Chat, Currículos]; “Home” e páginas de detalhe acessadas via rotas.
+
+Acessibilidade: fontes escaláveis, rotas com rótulos de leitor de tela, áreas de toque 44 px, estados de foco.
+
+Microinterações: feedback de toque, skeletons, pull-to-refresh onde faz sentido.
+
+1) Home (Landing/Apresentação)
+
+Prompt
+
+Gere a tela “Home” de apresentação do sistema “Vaga Certa”.
+
+Hero: logotipo à esquerda; título forte “Vaga Certa” e subtítulo sobre empregabilidade. CTA primário “Criar conta” e CTA secundário “Entrar”.
+
+Seção Dor/Dado: card #FFFDF5 com destaque “80%” grande, legenda “currículos descartados”, fonte da Associação Brasileira de RH em texto menor.
+
+Pitch em cards com fotos/ícones seguindo a ordem: ISA, SARAH, GUILHERME, LUCAS, LUÍSA, ISA, SARAH, GUILHERME, LUCAS, LUÍSA, MAIA. Cada card exibe:
+
+Título curto com o nome do narrador.
+
+Texto do pitch fornecido, resumido para 2–3 linhas por card, com botão “Saiba mais” que abre modal com o texto completo.
+
+Diferenciais: grid de 4 itens com ícones: “Currículo com IA”, “Envio automático”, “Integração com APIs de emprego”, “Recomendações de cursos”.
+
+Prova social: carrossel de depoimentos, rating 4.8/5, avatares.
+
+FAQ colapsável: 5 itens.
+
+Rodapé: links de políticas e contato.
+
+Estilo: destaque em #75182C, cards #FFFDF5 como nas referências, cantos 16 px, sombras leves.
+
+Acessibilidade: hierarquia semântica, botões com rótulos claros.
+
+2) Cadastro
+
+Prompt
+
+Gere a tela “Cadastro”.
+
+Campos: Nome completo, Telefone (com máscara), E-mail, CPF (com máscara), Senha, Confirmar senha.
+
+Requisitos de senha exibidos em checklist progressivo.
+
+Checkbox “Aceito os termos e privacidade” com links.
+
+Botão primário “Criar conta” (desativado até validações passarem) e link “Já tenho conta”.
+
+Erros inline, estados de loading e sucesso. Feedback visual em #2E7D32 ao concluir.
+
+Layout: AppBar “Cadastro”, formulário em card #FFFDF5 com padding 16.
+
+Acessibilidade: descrição de erros por aria-live, rótulos de campos visíveis.
+
+3) Login
+
+Prompt
+
+Gere a tela “Login”.
+
+Campos: E-mail, Senha, link “Esqueci minha senha”.
+
+Botão primário “Entrar”; divisão “ou” com botão secundário “Entrar com WhatsApp” (apenas UI).
+
+Card de boas-vindas com mini-texto sobre “acesso rápido e seguro”.
+
+Estados: erro de credenciais, lembrar-me, skeleton do redirecionamento.
+
+Estilo coerente com Cadastro; manter #75182C nos CTAs e cards #FFFDF5.
+
+4) Vagas
+
+Prompt
+
+Gere a tela “Vagas” com busca e recomendações.
+
+AppBar com título “Vagas”, campo de busca sticky com ícone.
+
+Banner principal: carrossel de vagas recomendadas. Cada banner mostra:
+
+Cargo (negrito), nome da empresa, e badge de compatibilidade no formato anel com o percentual dentro, como na imagem de referência.
+
+Botão “Ver detalhes”.
+
+Lista de “Recomendadas para você” com cards clicáveis no padrão do banner.
+
+Filtros em bottom sheet: localização, regime, salário, modalidade, ordenar por compatibilidade.
+
+Estados: “sem resultados”, skeleton, erro com retry.
+
+Acessibilidade: rótulos claros nos filtros; indicadores de foco.
+
+5) Detalhe da Empresa/Vaga
+
+Prompt
+
+Gere a tela “Detalhe da vaga/empresa”.
+
+AppBar com seta de voltar à lista de Vagas.
+
+Card superior: logo/placeholder da empresa, cargo, empresa, local, tipo de contrato, compatibilidade como anel.
+
+Seções em cards #FFFDF5:
+
+“Sobre a empresa”.
+
+“Descrição da vaga” com requisitos, responsabilidades, benefícios.
+
+“Faixa salarial”/“Remuneração”.
+
+“Processo seletivo” (etapas).
+
+Botões: primário “Enviar currículo com MAIA”, secundário “Salvar vaga”.
+
+Rodapé com vagas semelhantes.
+
+Estados de envio: loading, sucesso, erro. Confirme com toast.
+
+6) Relatórios
+
+Prompt
+
+Gere a tela “Relatórios” com três blocos principais.
+
+Banner 1: “Empresas que combinam com você” com anel de compatibilidade grande e título conforme a 3ª imagem.
+
+Banner 2: “Já enviamos seu currículo para” + número grande no centro, subtítulo “oportunidades”, como a 4ª imagem.
+
+Banner 3: “Cursos recomendados para fortalecer seu perfil” em lista de cards, cada um no padrão da 5ª imagem:
+
+Selo “Recomendado para você”, título do curso, mini descrição em 2 linhas, thumbnail à direita, botão “Ver curso”.
+
+Cada banner abre página de detalhamento ao toque.
+
+Filtro temporal: últimos 7/30/90 dias.
+
+Acessibilidade: números com leitura descritiva para leitores de tela.
+
+7) Detalhamento dos Cursos
+
+Prompt
+
+Gere a tela “Detalhe do curso”.
+
+AppBar com seta de voltar para Relatórios.
+
+Card hero: título do curso, selo “Gratuito/Pago”, thumbnail.
+
+Seções em cards #FFFDF5:
+
+“Sobre o curso” com descrição longa.
+
+“Habilidades desenvolvidas” em chips.
+
+“Carga horária” e “Duração estimada”.
+
+“Preço” e condições, se pago.
+
+“Certificação” (sim/não).
+
+“Oferta por” (instituição/instrutor).
+
+Botão primário “Acessar curso” com link externo; secundário “Salvar”.
+
+Rodapé: cursos similares.
+
+8) Chat (MAIA)
+
+Prompt
+
+Gere a tela “Chat com MAIA” no estilo das imagens 1 e 6.
+
+Balões: mensagens da MAIA em card #FFFDF5 com avatar ilustra; mensagens do usuário em balão sólido #75182C com texto branco.
+
+Cabeçalho com status “online/typing…”.
+
+Área de entrada: campo de texto com ícone de microfone para ditado, ícone de upload para anexar PDF/PNG/JPG, botão enviar; instrução “Você pode falar ou digitar”.
+
+Mensagens especiais: sugestões em botões “chips” horizontais (ex.: “Ver cursos de complemento”, “Atualizar currículo”).
+
+Estados: upload em progresso, erro de anexo, visualização de arquivo anexado.
+
+Acessibilidade: rótulos dos ícones, foco navegável por teclado.
+
+9) Currículos
+
+Prompt
+
+Gere a tela “Currículos enviados”.
+
+Lista de cards como na 7ª imagem:
+
+Ícone de documento à esquerda, título “Currículo para [Cargo]”, data à direita, subtítulo com empresa se disponível.
+
+Ação ao toque: download automático do arquivo (apenas simulação visual).
+
+Filtros por período/cargo.
+
+Estados: vazio com ilustração “Você ainda não enviou currículos”.
+
+10) Configuração
+
+Prompt
+
+Gere a tela “Configuração”.
+
+Card “Dados pessoais”: Nome, Telefone, E-mail, CPF com botões “Editar”.
+
+“Preferências de candidatura”: localização, modalidade de trabalho, pretensão salarial, áreas de interesse.
+
+“Notificações”: toggles para WhatsApp, push, e-mail; escolha de periodicidade para “vagas ≥ 75%”.
+
+“Privacidade e segurança”: alterar senha, gestão de consentimentos, baixar dados.
+
+“Sobre o app”: versão, termos e política.
+
+Botão “Sair da conta”.
+
+Estados: confirmação ao salvar, erro, loading.
+
+Observações finais
+
+Em todas as telas, reproduza a estética dos exemplos: cards claros #FFFDF5, botões e balões em #75182C, anéis de progresso com percentual ao centro, cantos arredondados e sombras suaves.
+
+Forneça variações dark-aware opcionais mantendo contraste adequado.
+
+Entregue componentes design-system prontos: Button, Input, Card, Badge, ProgressRing, Chip, Banner, ListItem, AppBar, TabBar, Toast, Modal, BottomSheet.
+
+Se desejar, é possível transformar qualquer um destes prompts para um formato direcionado a Figma, React Native ou Flutter, mantendo a mesma especificação visual.

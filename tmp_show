@@ -1,0 +1,480 @@
+import { COOKIE_NAME } from "@shared/const";
+import { getSessionCookieOptions } from "./_core/cookies";
+import { systemRouter } from "./_core/systemRouter";
+import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
+import { z } from "zod";
+import * as db from "./db";
+import { invokeLLM } from "./_core/llm";
+import { storagePut } from "./storage";
+import bcrypt from "bcryptjs";
+import { isStrongPassword, getPasswordStrengthError } from "@shared/password";
+import { sdk } from "./_core/sdk";
+import { sanitizeAiText } from "./_core/text";
+import { searchAdzunaJobs } from "./_core/adzuna";
+
+export const appRouter = router({
+  system: systemRouter,
+  
+  auth: router({
+    me: publicProcedure.query(opts => opts.ctx.user),
+    logout: publicProcedure.mutation(({ ctx }) => {
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      return { success: true } as const;
+    }),
+    updateAccount: protectedProcedure
+      .input(
+        z.object({
+          name: z.string().min(1).optional(),
+          email: z.string().min(1).optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const database = await db.getDb();
+        if (!database) throw new Error("Banco de dados nǜo configurado (DATABASE_URL)");
+        const updates: { name?: string; email?: string } = {};
+        if (typeof input.name === 'string') updates.name = input.name.trim();
+        if (typeof input.email === 'string') {
+          const email = input.email.trim().toLowerCase();
+          const basicEmailRegex = /.+@.+\..+/;
+          if (!basicEmailRegex.test(email)) throw new Error("Email inválido");
+          const existing = await db.getUserByEmail(email);
+          if (existing && existing.id !== ctx.user.id) throw new Error("Email já cadastrado");
+          updates.email = email;
+        }
+        if (!updates.name && !updates.email) return { success: true } as const;
+        await db.updateUserAccount(ctx.user.id, updates);
+        return { success: true } as const;
+      }),
+    register: publicProcedure
+      .input(z.object({
+        name: z.string().min(1, "Nome é obrigatório"),
+        email: z.string().min(1),
+        phone: z.string().min(1),
+        cpf: z.string().min(1),
+        password: z.string().superRefine((p, ctx) => {
+          if (!isStrongPassword(p)) {
+            ctx.addIssue({ code: "custom", message: getPasswordStrengthError(p) ?? "Senha fraca" });
+          }
+        }),
+        confirmPassword: z.string().min(1),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const database = await db.getDb();
+        if (!database) {
+          throw new Error("Banco de dados não configurado (DATABASE_URL)");
+        }
+        const emailNorm = input.email.trim().toLowerCase();
+        const emailRegex = /.+@.+\..+/;
+        if (!emailRegex.test(emailNorm)) {
+          throw new Error("Email inválido");
+        }
+        const existingByEmail = await db.getUserByEmail(emailNorm);
+        if (existingByEmail) {
+          throw new Error("Email já cadastrado");
+        }
+        // validações simples de telefone/CPF e confirmação de senha
+        const digits = (s: string) => s.replace(/\D/g, "");
+        const phoneDigits = digits((input as any).phone ?? "");
+        if (phoneDigits.length < 10 || phoneDigits.length > 11) {
+          throw new Error("Telefone inválido");
+        }
+        const cpfDigits = digits((input as any).cpf ?? "");
+        if (cpfDigits.length !== 11) {
+          throw new Error("CPF inválido");
+        }
+        try {
+          const cpfExists = await db.getUserProfileByCpf(cpfDigits);
+          if (cpfExists) {
+            throw new Error("CPF já cadastrado");
+          }
+        } catch {}
+        if ((input as any).confirmPassword !== input.password) {
+          throw new Error("As senhas não coincidem");
+        }
+
+        const passwordHash = await bcrypt.hash(input.password, 10);
+        await db.createLocalUser({
+          name: input.name,
+          email: emailNorm,
+          passwordHash,
+        });
+        // Autentica após cadastro
+        // criar perfil com telefone/cpf
+        try {
+          const created = await db.getUserByEmail(input.email);
+          if (created) {
+            await db.createUserProfile(created.id, { phone: (input as any).phone, cpf: (input as any).cpf });
+          }
+        } catch {}
+
+        const token = await sdk.createSessionToken(`local:${emailNorm}`, { name: input.name });
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token, cookieOptions);
+        return { success: true } as const;
+      }),
+    login: publicProcedure
+      .input(z.object({
+        email: z.string().email("Email inválido"),
+        password: z.string().min(1, "Senha é obrigatória"),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const database = await db.getDb();
+        if (!database) {
+          throw new Error("Banco de dados não configurado (DATABASE_URL)");
+        }
+        const email = input.email.trim().toLowerCase();
+        const basicEmailRegex = /.+@.+\..+/;
+        if (!basicEmailRegex.test(email)) {
+          throw new Error("Email ou senha inválidos");
+        }
+        const user = await db.getUserByEmail(email);
+        if (!user) {
+          // só permite login com conta existente
+          throw new Error("Credenciais inválidas");
+        }
+        if (!user.passwordHash) {
+          throw new Error("Conta não possui senha local. Use login via OAuth.");
+        }
+        const ok = await bcrypt.compare(input.password, user.passwordHash);
+        if (!ok) {
+          throw new Error("Credenciais inválidas");
+        }
+        // Atualiza lastSignedIn e cria sessão
+        await db.upsertUser({ openId: user.openId, lastSignedIn: new Date() });
+        const token = await sdk.createSessionToken(user.openId, { name: user.name || "" });
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token, cookieOptions);
+        return { success: true } as const;
+      }),
+  }),
+
+  // ===== JOBS (Vagas) =====
+  jobs: router({
+    list: publicProcedure
+      .input(z.object({ limit: z.number().default(20), offset: z.number().default(0) }).optional())
+      .query(async ({ input }) => {
+        return await db.getJobs(input?.limit || 20, input?.offset || 0);
+      }),
+
+    search: publicProcedure
+      .input(z.object({ query: z.string(), limit: z.number().default(20), location: z.string().optional() }))
+      .query(async ({ input }) => {
+        try {
+          const external = await searchAdzunaJobs({ query: input.query, resultsPerPage: input.limit, location: input.location });
+          return external.map(j => ({
+            id: j.id,
+            title: j.title,
+            company: j.company,
+            description: j.description,
+            requirements: null,
+            responsibilities: null,
+            benefits: null,
+            location: j.location,
+            salary_min: j.salary_min ?? undefined,
+            salary_max: j.salary_max ?? undefined,
+            contract_type: undefined,
+            modality: j.modality ?? undefined,
+            compatibility: j.compatibility,
+            company_logo: undefined,
+            company_description: undefined,
+            selection_process: undefined,
+          }));
+        } catch (_e) {
+          return await db.searchJobs(input.query, input.limit);
+        }
+      }),
+
+    getById: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        return await db.getJobById(input.id);
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        title: z.string(),
+        company: z.string(),
+        description: z.string(),
+        requirements: z.string().optional(),
+        responsibilities: z.string().optional(),
+        benefits: z.string().optional(),
+        location: z.string().optional(),
+        salary_min: z.number().optional(),
+        salary_max: z.number().optional(),
+        contract_type: z.string().optional(),
+        modality: z.string().optional(),
+        compatibility: z.number().default(0),
+        company_logo: z.string().optional(),
+        company_description: z.string().optional(),
+        selection_process: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.role !== 'admin') {
+          throw new Error('Only admins can create jobs');
+        }
+        return await db.createJob(input);
+      }),
+  }),
+
+  // ===== COURSES (Cursos) =====
+  courses: router({
+    list: publicProcedure
+      .input(z.object({ limit: z.number().default(20), offset: z.number().default(0) }).optional())
+      .query(async ({ input }) => {
+        return await db.getCourses(input?.limit || 20, input?.offset || 0);
+      }),
+
+    getById: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        return await db.getCourseById(input.id);
+      }),
+
+    getRecommended: publicProcedure
+      .input(z.object({ limit: z.number().default(10) }).optional())
+      .query(async ({ input }) => {
+        return await db.getRecommendedCourses(input?.limit || 10);
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        title: z.string(),
+        description: z.string().optional(),
+        skills: z.string().optional(),
+        duration_hours: z.number().optional(),
+        price: z.number().default(0),
+        is_free: z.boolean().default(true),
+        certification: z.boolean().default(false),
+        provider: z.string().optional(),
+        thumbnail: z.string().optional(),
+        external_url: z.string().optional(),
+        recommended_for_user: z.boolean().default(false),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.user?.role !== 'admin') {
+          throw new Error('Only admins can create courses');
+        }
+        return await db.createCourse(input);
+      }),
+  }),
+
+  // ===== SAVED JOBS =====
+  savedJobs: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getSavedJobs(ctx.user.id);
+    }),
+
+    save: protectedProcedure
+      .input(z.object({ jobId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        return await db.saveJob(ctx.user.id, input.jobId);
+      }),
+
+    remove: protectedProcedure
+      .input(z.object({ jobId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        return await db.removeSavedJob(ctx.user.id, input.jobId);
+      }),
+  }),
+
+  // ===== SUBMITTED RESUMES =====
+  resumes: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getSubmittedResumes(ctx.user.id);
+    }),
+
+    submit: protectedProcedure
+      .input(z.object({ jobId: z.number(), resumeUrl: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        return await db.submitResume(ctx.user.id, input.jobId, input.resumeUrl);
+      }),
+
+    generate: protectedProcedure
+      .input(z.object({
+        jobId: z.number().optional(),
+      }).optional())
+      .mutation(async ({ input, ctx }) => {
+        // If jobId provided, fetch minimal job info to tailor resume
+        let job: any = undefined;
+        if (input?.jobId) {
+          job = await db.getJobById(input.jobId);
+        }
+        const { generateResumePdf } = await import('./resume');
+        const result = await generateResumePdf(ctx.user.id, {
+          job: job ? { title: job.title, company: job.company, description: job.description, requirements: job.requirements } : undefined,
+        });
+        // Track resume in DB (status 'generated')
+        await db.submitResume(ctx.user.id, input?.jobId ?? 0, result.url, 'generated');
+        return { url: result.url, fileName: result.filename } as const;
+      }),
+
+    uploadResume: protectedProcedure
+      .input(z.object({ file: z.string(), fileName: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        try {
+          // Convert base64 to buffer
+          const buffer = Buffer.from(input.file, 'base64');
+          const key = `resumes/${ctx.user.id}/${Date.now()}-${input.fileName}`;
+          const result = await storagePut(key, buffer, 'application/pdf');
+          return result;
+        } catch (error) {
+          throw new Error(`Failed to upload resume: ${error}`);
+        }
+      }),
+  }),
+
+  // ===== CHAT (MAIA) =====
+  chat: router({
+    getMessages: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getChatMessages(ctx.user.id);
+    }),
+
+    sendMessage: protectedProcedure
+      .input(z.object({
+        content: z.string(),
+        attachmentUrl: z.string().optional(),
+        attachmentType: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        // Save user message
+        await db.addChatMessage(ctx.user.id, 'user', input.content, input.attachmentUrl, input.attachmentType);
+
+        // Get conversation history for context
+        const messages = await db.getChatMessages(ctx.user.id, 10);
+        
+        // Prepare messages for LLM
+        const llmMessages: any[] = messages.map(msg => ({
+          role: msg.sender === 'user' ? 'user' : ('assistant' as const),
+          content: String(msg.content),
+        })) as any[];
+        
+        // Add current message
+        llmMessages.push({ role: 'user', content: String(input.content) } as any);
+
+        try {
+          // Call LLM to generate response
+          const response = await invokeLLM({
+            messages: [
+              {
+                role: 'system',
+                content: `Você é a MAIA, Minha Assistente Integradora Autônoma da plataforma Vaga Certa. Sua missão é ajudar pessoas a conseguirem emprego de forma rápida, eficiente e personalizada.
+
+Funções principais:
+- Criar currículos automaticamente (analisar perfil, reescrever de forma profissional, currículo ATS‑friendly).
+- Buscar vagas reais (Adzuna) e recomendar as mais compatíveis considerando hard/soft skills, preferências, localização/modalidade, formação/experiência.
+- Acompanhar progresso e manter dados atualizados.
+- Sugerir cursos estratégicos (gratuitos e pagos) para aumentar a empregabilidade.
+
+Regras de comportamento:
+- Não inventar vagas/cursos/dados; usar apenas informações reais.
+- Privacidade primeiro; confirmar dados críticos.
+- Tom: empático, educado, didático, motivador e realista; fale sempre no feminino.
+
+Estilo:
+- Texto simples (pt‑BR por padrão), sem Markdown/asteriscos; UTF‑8 com ortografia correta.
+- Frases curtas; uma pergunta por vez.
+- Listas com hifens (-) ou numeração (1., 2., 3.).
+- Evite repetição e prolixidade; personalize pelo contexto.
+
+Fluxo inicial:
+1. Boas‑vindas; 2. Nome completo; 3. Área/cargo; 4. Experiências, cursos, hard/soft skills, formação, certificações, localização e pretensão; 5. Gerar currículo e oferecer otimização para vaga específica.
+
+Nunca prometa emprego nem invente informações.
+`,
+              },
+              ...llmMessages,
+            ],
+          });
+
+          const aiContent = sanitizeAiText(String(response.choices[0]?.message?.content || 'Desculpe, não consegui gerar uma resposta.'));
+          
+          // Save AI response
+          await db.addChatMessage(ctx.user.id, 'maia', aiContent);
+
+          return {
+            userMessage: input.content,
+            aiResponse: aiContent,
+          };
+        } catch (error: any) {
+          console.error('LLM Error:', error);
+          const msg = String(error?.message || error || '').trim();
+          const fallbackResponse = msg
+            ? `Erro da IA: ${msg}`
+            : 'Desculpe, estou tendo dificuldades no momento. Por favor, tente novamente.';
+          await db.addChatMessage(ctx.user.id, 'maia', fallbackResponse);
+          return {
+            userMessage: input.content,
+            aiResponse: fallbackResponse,
+          };
+        }
+      }),
+  }),
+
+  // ===== USER PROFILE =====
+  userProfile: router({
+    get: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getUserProfile(ctx.user.id);
+    }),
+
+    update: protectedProcedure
+      .input(z.object({
+        phone: z.string().optional(),
+        cpf: z.string().optional(),
+        location: z.string().optional(),
+        work_modality: z.string().optional(),
+        salary_expectation: z.number().optional(),
+        areas_of_interest: z.string().optional(),
+        notification_whatsapp: z.boolean().optional(),
+        notification_push: z.boolean().optional(),
+        notification_email: z.boolean().optional(),
+        notification_frequency: z.string().optional(),
+        resume_url: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        // Unicidade de CPF
+        if (input.cpf) {
+          const digits = (s: string) => s.replace(/\D/g, "");
+          const cpfDigits = digits(input.cpf);
+          if (cpfDigits.length !== 11) throw new Error("CPF inválido");
+          const found = await db.getUserProfileByCpf(cpfDigits);
+          if (found && found.user_id !== ctx.user.id) throw new Error("CPF já cadastrado");
+          input.cpf = cpfDigits as any;
+        }
+        const existing = await db.getUserProfile(ctx.user.id);
+        if (existing) {
+          return await db.updateUserProfile(ctx.user.id, input);
+        } else {
+          return await db.createUserProfile(ctx.user.id, input);
+        }
+      }),
+  }),
+
+  // ===== STATISTICS & REPORTS =====
+  statistics: router({
+    getUserStats: protectedProcedure.query(async ({ ctx }) => {
+      return await db.getUserStatistics(ctx.user.id);
+    }),
+
+    getReportData: protectedProcedure
+      .input(z.object({ days: z.number().default(30) }).optional())
+      .query(async ({ ctx, input }) => {
+        const stats = await db.getUserStatistics(ctx.user.id);
+        const resumeCount = await db.getSubmittedResumeCount(ctx.user.id, input?.days || 30);
+        const recommendedCourses = await db.getRecommendedCourses(5);
+        
+        return {
+          compatibility: Math.floor(Math.random() * 40) + 60, // 60-100%
+          resumesSubmitted: resumeCount,
+          recommendedCourses,
+          stats,
+        };
+      }),
+  }),
+});
+
+export type AppRouter = typeof appRouter;
+
+
+
+

@@ -1,0 +1,1 @@
+import 'dotenv/config'; import { invokeLLM } from '../server/_core/llm'; (async()=>{ const res = await invokeLLM({ messages: [{ role:'user', content:'Diga oi e responda com uma frase.'}] }); console.log('MODEL', res.model); console.log('TEXT', String((res.choices?.[0]?.message as any)?.content||'')); })().catch(e=>{ console.error('ERR', e?.message||e); process.exit(1); });
