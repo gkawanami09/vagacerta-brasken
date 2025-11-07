@@ -15,8 +15,10 @@ import * as db from "../../db";
 import { generateResumePdf } from "../../resume";
 import type {
   JobCardDTO,
+  JobCompanySummary,
   JobDetailDTO,
   NormalizedJob,
+  RecommendedJobDTO,
   SearchAndIngestOptions,
 } from "./dto";
 import { computeMatch, storeMatch } from "./matcher";
@@ -267,17 +269,19 @@ export async function searchAndIngest(options: SearchAndIngestOptions = {}) {
   return upserted;
 }
 
+const buildCompanySummary = (company?: JobCompany | null): JobCompanySummary => ({
+  id: company?.id ?? undefined,
+  name: company?.name ?? "Empresa não informada",
+  logoUrl: company?.logoUrl ?? undefined,
+  website: company?.website ?? null,
+});
+
 const mapToCard = (
   row: JobListing & { company?: JobCompany | null; match?: JobMatch | null }
 ): JobCardDTO => ({
   id: row.id,
   title: row.title,
-  company: {
-    id: row.company?.id ?? undefined,
-    name: row.company?.name ?? "Empresa não informada",
-    logoUrl: row.company?.logoUrl ?? undefined,
-    website: row.company?.website ?? null,
-  },
+  company: buildCompanySummary(row.company ?? undefined),
   location: row.location ?? null,
   remote: Boolean(row.remote),
   salaryLabel:
@@ -294,17 +298,107 @@ const mapToCard = (
   source: row.source as "adzuna" | "web",
 });
 
+async function collectMatches(
+  database: NonNullable<Awaited<ReturnType<typeof db.getDb>>>,
+  userId: number,
+  limit: number
+) {
+  const rows = await database
+    .select({ job: job_listings, company: job_companies, match: job_matches })
+    .from(job_listings)
+    .leftJoin(job_companies, eq(job_listings.companyId, job_companies.id))
+    .leftJoin(
+      job_matches,
+      and(eq(job_matches.jobId, job_listings.id), eq(job_matches.userId, userId))
+    )
+    .orderBy(desc(job_matches.score), desc(job_listings.updatedAt))
+    .limit(Math.max(limit * 4, limit));
+
+  const enriched: Array<{
+    job: JobListing;
+    company?: JobCompany | null;
+    match?: JobMatch | null;
+  }> = [];
+  let shouldPersist = false;
+
+  for (const row of rows) {
+    let match = row.match ?? undefined;
+    if (!match) {
+      match = (await computeAndStoreMatch(userId, row.job)) ?? undefined;
+      if (match) {
+        shouldPersist = true;
+      }
+    }
+    if (match) {
+      enriched.push({ job: row.job, company: row.company ?? null, match });
+    }
+  }
+
+  if (shouldPersist) {
+    await db.persistDatabase();
+  }
+
+  enriched.sort((a, b) => {
+    const scoreDiff = (b.match?.score ?? 0) - (a.match?.score ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    const aTime = a.job.updatedAt ? new Date(a.job.updatedAt).getTime() : 0;
+    const bTime = b.job.updatedAt ? new Date(b.job.updatedAt).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  return enriched.slice(0, limit);
+}
+
+export async function recommendJobsForUser(
+  userId: number,
+  options: { limit?: number } = {}
+): Promise<RecommendedJobDTO[]> {
+  const database = await db.getDb();
+  if (!database) return [];
+
+  const limit = Math.max(1, Math.min(options.limit ?? 6, 20));
+
+  const mapToRecommended = (
+    row: JobListing & { company?: JobCompany | null; match?: JobMatch | null }
+  ): RecommendedJobDTO => {
+    const card = mapToCard(row);
+    return {
+      ...card,
+      applyUrl: row.applyUrl,
+      salaryMin: row.salaryMin ?? null,
+      salaryMax: row.salaryMax ?? null,
+    };
+  };
+
+  const buildResult = (items: Array<{
+    job: JobListing;
+    company?: JobCompany | null;
+    match?: JobMatch | null;
+  }>) =>
+    items.map((item) =>
+      mapToRecommended({
+        ...item.job,
+        company: item.company ?? undefined,
+        match: item.match ?? undefined,
+      } as JobListing & { company?: JobCompany | null; match?: JobMatch | null })
+    );
+
+  let items = await collectMatches(database, userId, limit);
+
+  if (items.length === 0) {
+    await searchAndIngest({ userId });
+    items = await collectMatches(database, userId, limit);
+  }
+
+  return buildResult(items);
+}
+
 const mapToDetail = (
   row: JobListing & { company?: JobCompany | null; match?: JobMatch | null }
 ): JobDetailDTO => ({
   id: row.id,
   title: row.title,
-  company: {
-    id: row.company?.id ?? undefined,
-    name: row.company?.name ?? "Empresa não informada",
-    logoUrl: row.company?.logoUrl ?? undefined,
-    website: row.company?.website ?? null,
-  },
+  company: buildCompanySummary(row.company ?? undefined),
   location: row.location ?? null,
   remote: Boolean(row.remote),
   salaryMin: row.salaryMin ?? null,
