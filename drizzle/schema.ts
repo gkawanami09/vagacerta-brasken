@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 /**
  * Core user table backing auth flow.
@@ -56,6 +57,130 @@ export const jobs = sqliteTable("jobs", {
 
 export type Job = typeof jobs.$inferSelect;
 export type InsertJob = typeof jobs.$inferInsert;
+
+export const job_companies = sqliteTable(
+  "job_companies",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    website: text("website"),
+    logoUrl: text("logo_url"),
+    createdAt: integer("createdAt", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s','now')*1000)`),
+    updatedAt: integer("updatedAt", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s','now')*1000)`),
+  },
+  (table) => ({
+    nameUnique: uniqueIndex("idx_job_companies_name").on(table.name),
+  })
+);
+
+export type JobCompany = typeof job_companies.$inferSelect;
+export type InsertJobCompany = typeof job_companies.$inferInsert;
+
+export const job_listings = sqliteTable(
+  "job_listings",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    companyId: text("company_id"),
+    location: text("location"),
+    remote: integer("remote", { mode: "boolean" }).notNull().default(false),
+    description: text("description"),
+    requirements: text("requirements"),
+    benefits: text("benefits"),
+    salaryMin: integer("salary_min"),
+    salaryMax: integer("salary_max"),
+    salaryLabel: text("salary_label"),
+    applyUrl: text("apply_url").notNull(),
+    source: text("source").notNull(),
+    externalId: text("external_id"),
+    postedAt: integer("posted_at", { mode: "timestamp" }),
+    raw: text("raw"),
+    createdAt: integer("createdAt", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s','now')*1000)`),
+    updatedAt: integer("updatedAt", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s','now')*1000)`),
+  },
+  (table) => ({
+    sourceExternalUnique: uniqueIndex("idx_job_listings_source_external").on(
+      table.source,
+      table.externalId
+    ),
+    applyUrlUnique: uniqueIndex("idx_job_listings_apply_url").on(table.applyUrl),
+  })
+);
+
+export type JobListing = typeof job_listings.$inferSelect;
+export type InsertJobListing = typeof job_listings.$inferInsert;
+
+export const job_matches = sqliteTable(
+  "job_matches",
+  {
+    id: text("id").primaryKey(),
+    userId: integer("user_id").notNull(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => job_listings.id),
+    score: integer("score").notNull().default(0),
+    factors: text("factors"),
+    updatedAt: integer("updatedAt", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s','now')*1000)`),
+  },
+  (table) => ({
+    userJobUnique: uniqueIndex("idx_job_matches_user_job").on(table.userId, table.jobId),
+  })
+);
+
+export type JobMatch = typeof job_matches.$inferSelect;
+export type InsertJobMatch = typeof job_matches.$inferInsert;
+
+export const job_saved_listings = sqliteTable(
+  "job_saved_listings",
+  {
+    id: text("id").primaryKey(),
+    userId: integer("user_id").notNull(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => job_listings.id),
+    createdAt: integer("createdAt", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s','now')*1000)`),
+  },
+  (table) => ({
+    uniqueUserJob: uniqueIndex("idx_job_saved_user_job").on(table.userId, table.jobId),
+  })
+);
+
+export type JobSavedListing = typeof job_saved_listings.$inferSelect;
+export type InsertJobSavedListing = typeof job_saved_listings.$inferInsert;
+
+export const job_applications = sqliteTable(
+  "job_applications",
+  {
+    id: text("id").primaryKey(),
+    userId: integer("user_id").notNull(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => job_listings.id),
+    resumePath: text("resume_path").notNull(),
+    status: text("status").notNull().default("sent"),
+    sentAt: integer("sentAt", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(strftime('%s','now')*1000)`),
+  },
+  (table) => ({
+    userJobUnique: uniqueIndex("idx_job_applications_user_job").on(table.userId, table.jobId),
+  })
+);
+
+export type JobApplication = typeof job_applications.$inferSelect;
+export type InsertJobApplication = typeof job_applications.$inferInsert;
 
 /**
  * Courses table

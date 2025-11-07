@@ -77,6 +77,66 @@ async function ensureInitialized() {
         createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
         updatedAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
       );
+      CREATE TABLE IF NOT EXISTS job_companies (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        website TEXT,
+        logo_url TEXT,
+        createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        updatedAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_job_companies_name ON job_companies(name);
+      CREATE TABLE IF NOT EXISTS job_listings (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        company_id TEXT,
+        location TEXT,
+        remote INTEGER DEFAULT 0,
+        description TEXT,
+        requirements TEXT,
+        benefits TEXT,
+        salary_min INTEGER,
+        salary_max INTEGER,
+        salary_label TEXT,
+        apply_url TEXT NOT NULL,
+        source TEXT NOT NULL,
+        external_id TEXT,
+        posted_at INTEGER,
+        raw TEXT,
+        createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        updatedAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        FOREIGN KEY(company_id) REFERENCES job_companies(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_job_listings_source_external ON job_listings(source, external_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_job_listings_apply_url ON job_listings(apply_url);
+      CREATE TABLE IF NOT EXISTS job_matches (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        job_id TEXT NOT NULL,
+        score INTEGER NOT NULL DEFAULT 0,
+        factors TEXT,
+        updatedAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        FOREIGN KEY(job_id) REFERENCES job_listings(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_job_matches_user_job ON job_matches(user_id, job_id);
+      CREATE TABLE IF NOT EXISTS job_saved_listings (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        job_id TEXT NOT NULL,
+        createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        FOREIGN KEY(job_id) REFERENCES job_listings(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_job_saved_user_job ON job_saved_listings(user_id, job_id);
+      CREATE TABLE IF NOT EXISTS job_applications (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        job_id TEXT NOT NULL,
+        resume_path TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'sent',
+        sentAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        FOREIGN KEY(job_id) REFERENCES job_listings(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_job_applications_user_job ON job_applications(user_id, job_id);
       CREATE TABLE IF NOT EXISTS courses (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -240,6 +300,8 @@ async function persistDb() {
   const data = _sqlJsDb.export();
   await fs.promises.writeFile(_dbFilePath, Buffer.from(data));
 }
+
+export const persistDatabase = persistDb;
 
 export type DbCourseRecord = Omit<Course, "skills"> & { skills: string[] };
 

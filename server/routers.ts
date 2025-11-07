@@ -15,6 +15,7 @@ import { sanitizeAiText } from "./_core/text";
 import { searchAdzunaJobs } from "./_core/adzuna";
 import { generateResumePdf, getResumeCompletionStatus } from "./resume";
 import { getCourseDetail, recommendForUser } from "./modules/courses/service";
+import { recommendJobsForUser } from "./modules/jobs/service";
 import type { CourseDetailResponse } from "./modules/courses/types";
 
 const MAIA_SYSTEM_PROMPT = `Voce sera a MAIA, Minha Assistente Integradora Autonoma da plataforma Vaga Certa. Sua missao e ajudar pessoas a conquistar empregos de forma rapida, eficiente e personalizada.
@@ -638,9 +639,37 @@ export const appRouter = router({
 
   // ===== RESUMES =====
   resumes: router({
-    list: protectedProcedure.query(async ({ ctx }) =>
-      db.getSubmittedResumes(ctx.user.id)
-    ),
+    list: protectedProcedure.query(async ({ ctx }) => {
+      const [resumes, resumeStatusRaw] = await Promise.all([
+        db.getSubmittedResumes(ctx.user.id),
+        getResumeCompletionStatus(ctx.user.id).catch((error) => {
+          console.warn("[Resumes] Failed to compute completion status", error);
+          return null;
+        }),
+      ]);
+
+      let recommendedJobs: Awaited<ReturnType<typeof recommendJobsForUser>> = [];
+      const shouldRecommend =
+        resumes.length > 0 || Boolean(resumeStatusRaw?.complete);
+
+      if (shouldRecommend) {
+        try {
+          recommendedJobs = await recommendJobsForUser(ctx.user.id, { limit: 6 });
+        } catch (error) {
+          console.warn("[Resumes] Failed to load recommended jobs", error);
+        }
+      }
+
+      const resumeStatus = resumeStatusRaw
+        ? {
+            complete: resumeStatusRaw.complete,
+            completion: resumeStatusRaw.completion,
+            missing: resumeStatusRaw.missing,
+          }
+        : null;
+
+      return { resumes, recommendedJobs, resumeStatus } as const;
+    }),
 
     submit: protectedProcedure
       .input(z.object({ jobId: z.number(), resumeUrl: z.string() }))
