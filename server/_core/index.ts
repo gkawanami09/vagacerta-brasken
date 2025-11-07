@@ -11,6 +11,7 @@ import path from "path";
 import { registerAiStreamRoutes } from "./aiStream";
 import { registerLlmDiagRoutes } from "./llmDiag";
 import { registerCoursesRoutes } from "../modules/courses/routes";
+import { registerJobsRoutes } from "../modules/jobs/routes";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -47,6 +48,8 @@ async function startServer() {
   registerLlmDiagRoutes(app);
   // Courses REST API
   registerCoursesRoutes(app);
+  // Jobs REST API
+  registerJobsRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",
