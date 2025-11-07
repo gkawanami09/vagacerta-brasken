@@ -14,6 +14,7 @@ export interface NormalizedCourse {
   certification: boolean;
   level?: string;
   courseType?: string;
+  costValue?: number | null;
 }
 
 export interface CourseDetailData {
@@ -31,6 +32,7 @@ export interface CourseDetailData {
   estimatedTime?: string;
   certification: boolean;
   durationHours?: number;
+  offerBy?: string;
   similar: Array<{
     title: string;
     priceLabel: string;
@@ -79,4 +81,36 @@ export interface CourseDetailResponse {
     avaliacao?: number;
     link: string;
   }>;
+}
+
+export interface ProviderSearchOptions {
+  limit?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface CourseProvider {
+  name: string;
+  supportsDetail?: boolean;
+  search(query: string, options?: ProviderSearchOptions): Promise<NormalizedCourse[]>;
+  detail?(course: NormalizedCourse, options?: ProviderSearchOptions): Promise<CourseDetailData | null>;
+}
+
+export interface RecommendationContext {
+  userId: number;
+  query?: string;
+  jobId?: number | null;
+  targetRole?: string | null;
+  skills?: string[];
+  missingSkills?: string[];
+  softSkills?: string[];
+  hardSkills?: string[];
+  preferredProviders?: string[];
+}
+
+export interface RecommendationCandidate extends NormalizedCourse {
+  score: number;
+  reasons: string[];
+  resumeScore?: number;
+  resumeMatches?: string[];
 }

@@ -72,6 +72,18 @@ export const ENV = {
   adzunaBaseUrl: process.env.ADZUNA_BASE_URL ?? "https://api.adzuna.com/v1/api",
   adzunaResultsPerPage: parseInt(process.env.ADZUNA_RESULTS_PER_PAGE ?? "20"),
   adzunaLanguage: process.env.ADZUNA_LANGUAGE ?? "pt_BR",
+  // Udemy affiliate / Ads
+  udemyAccountSid: clean(process.env.UDEMY_ACCOUNT_SID),
+  udemyAuthToken: clean(process.env.UDEMY_AUTH_TOKEN),
+  udemyBaseUrl: process.env.UDEMY_BASE_URL ?? "https://www.udemy.com/api-2.0",
+  // DIO & Fundação Bradesco
+  dioBaseUrl: process.env.DIO_BASE_URL ?? "https://www.dio.me",
+  bradescoBaseUrl: process.env.BRADESCO_BASE_URL ?? "https://www.ev.org.br",
+  coursesSyncTerms: (process.env.COURSES_SYNC_TERMS ?? "react,typescript,excel,logistica,front-end")
+    .split(/[,;]+/)
+    .map((term) => term.trim())
+    .filter(Boolean),
+  coursesCacheTtlMs: parseInt(process.env.COURSES_CACHE_TTL_MS ?? `${15 * 60 * 1000}`),
   // Gemini
   geminiApiKey: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "",
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-1.5-flash",

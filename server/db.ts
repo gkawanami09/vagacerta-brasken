@@ -1,9 +1,21 @@
-import { eq, and, gte, lte, like } from "drizzle-orm";
+import { eq, and, gte, lte, like, inArray, desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/sql-js";
 import initSqlJs from "sql.js";
 import fs from "fs";
 import path from "path";
-import { InsertUser, users, jobs, courses, saved_jobs, submitted_resumes, chat_messages, user_profiles } from "../drizzle/schema";
+import {
+  InsertUser,
+  users,
+  jobs,
+  courses,
+  saved_jobs,
+  submitted_resumes,
+  chat_messages,
+  user_profiles,
+  saved_courses,
+  course_recommendations,
+} from "../drizzle/schema";
+import type { Course, SavedCourse, CourseRecommendation } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -66,20 +78,36 @@ async function ensureInitialized() {
         updatedAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
       );
       CREATE TABLE IF NOT EXISTS courses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         description TEXT,
-        skills TEXT,
-        duration_hours INTEGER,
-        price INTEGER,
-        is_free INTEGER DEFAULT 1,
+        provider TEXT NOT NULL,
+        category TEXT,
+        price_label TEXT NOT NULL,
+        rating REAL,
+        url TEXT NOT NULL UNIQUE,
+        image_url TEXT,
+        skills TEXT NOT NULL DEFAULT '[]',
+        workload TEXT,
+        estimated_time TEXT,
         certification INTEGER DEFAULT 0,
-        provider TEXT,
-        thumbnail TEXT,
-        external_url TEXT,
-        recommended_for_user INTEGER DEFAULT 0,
         createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
         updatedAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+      );
+      CREATE TABLE IF NOT EXISTS saved_courses (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        course_id TEXT NOT NULL,
+        createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        UNIQUE(user_id, course_id)
+      );
+      CREATE TABLE IF NOT EXISTS course_recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        course_id TEXT NOT NULL,
+        score REAL,
+        createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+        UNIQUE(user_id, course_id)
       );
       CREATE TABLE IF NOT EXISTS saved_jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +154,82 @@ async function ensureInitialized() {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_user_profiles_cpf ON user_profiles(cpf);
     `;
     _sqlJsDb.exec(schemaSql);
+
+    try {
+      const info = _sqlJsDb.exec("PRAGMA table_info(courses)");
+      if (info.length > 0) {
+        const columns = info[0].values.map((row: any[]) => row[1]);
+        if (!columns.includes("price_label")) {
+          console.info("[DB] Migrating legacy courses table to new schema");
+          _sqlJsDb.exec(`ALTER TABLE courses RENAME TO courses_legacy;`);
+          _sqlJsDb.exec(`
+            CREATE TABLE IF NOT EXISTS courses (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              description TEXT,
+              provider TEXT NOT NULL,
+              category TEXT,
+              price_label TEXT NOT NULL,
+              rating REAL,
+              url TEXT NOT NULL UNIQUE,
+              image_url TEXT,
+              skills TEXT NOT NULL DEFAULT '[]',
+              workload TEXT,
+              estimated_time TEXT,
+              certification INTEGER DEFAULT 0,
+              createdAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+              updatedAt INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+            );
+          `);
+          _sqlJsDb.exec(`
+            INSERT OR IGNORE INTO courses (
+              id,
+              title,
+              description,
+              provider,
+              category,
+              price_label,
+              rating,
+              url,
+              image_url,
+              skills,
+              workload,
+              estimated_time,
+              certification,
+              createdAt,
+              updatedAt
+            )
+            SELECT
+              CAST(id AS TEXT) AS id,
+              title,
+              description,
+              COALESCE(provider, 'Desconhecido'),
+              NULL,
+              CASE
+                WHEN is_free = 1 THEN 'Gratuito'
+                WHEN price IS NULL THEN 'Pago'
+                ELSE printf('R$ %.2f', price / 100.0)
+              END AS price_label,
+              NULL,
+              COALESCE(external_url, ''),
+              thumbnail,
+              COALESCE(skills, '[]'),
+              CASE
+                WHEN duration_hours IS NOT NULL THEN printf('%d horas', duration_hours)
+                ELSE NULL
+              END,
+              NULL,
+              certification,
+              createdAt,
+              updatedAt
+            FROM courses_legacy;
+          `);
+          _sqlJsDb.exec(`DROP TABLE courses_legacy;`);
+        }
+      }
+    } catch (error) {
+      console.error("[DB] Failed to migrate courses schema:", error);
+    }
     _db = drizzle(_sqlJsDb);
   })();
   return _initPromise;
@@ -136,6 +240,33 @@ async function persistDb() {
   const data = _sqlJsDb.export();
   await fs.promises.writeFile(_dbFilePath, Buffer.from(data));
 }
+
+export type DbCourseRecord = Omit<Course, "skills"> & { skills: string[] };
+
+const parseSkills = (raw: unknown): string[] => {
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item)).filter((item) => item.trim().length > 0);
+  }
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item)).filter((item) => item.trim().length > 0);
+      }
+    } catch {
+      return raw
+        .split(/[,;|]/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+    }
+  }
+  return [];
+};
+
+const mapCourseRow = (row: Course): DbCourseRecord => ({
+  ...row,
+  skills: parseSkills((row as unknown as { skills: unknown }).skills),
+});
 
 export async function getDb() {
   if (!_db) {
@@ -304,32 +435,243 @@ export async function createJob(data: any) {
 }
 
 // ===== COURSES =====
-export async function getCourses(limit = 20, offset = 0) {
+export type CourseUpsertInput = {
+  id: string;
+  title: string;
+  description?: string | null;
+  provider: string;
+  category?: string | null;
+  priceLabel: string;
+  rating?: number | null;
+  url: string;
+  imageUrl?: string | null;
+  skills?: string[];
+  workload?: string | null;
+  estimatedTime?: string | null;
+  certification?: boolean;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
+
+const toCourseValues = (input: CourseUpsertInput) => {
+  const now = new Date();
+  const createdAt = input.createdAt ?? now;
+  const updatedAt = input.updatedAt ?? now;
+  return {
+    id: input.id,
+    title: input.title,
+    description: input.description ?? null,
+    provider: input.provider,
+    category: input.category ?? null,
+    priceLabel: input.priceLabel,
+    rating: input.rating ?? null,
+    url: input.url,
+    imageUrl: input.imageUrl ?? null,
+    skills: JSON.stringify((input.skills ?? []).filter((item) => item.trim().length > 0)),
+    workload: input.workload ?? null,
+    estimatedTime: input.estimatedTime ?? null,
+    certification: Boolean(input.certification),
+    createdAt,
+    updatedAt,
+  };
+};
+
+export async function upsertCourses(inputs: CourseUpsertInput[]): Promise<void> {
+  if (inputs.length === 0) return;
   const db = await getDb();
-  if (!db) return [];
-  return await db.select().from(courses).limit(limit).offset(offset);
+  if (!db) throw new Error("Database not available");
+
+  const now = new Date();
+  for (const input of inputs) {
+    const values = toCourseValues({ ...input, createdAt: now, updatedAt: now });
+    await db
+      .insert(courses)
+      .values(values as any)
+      .onConflictDoUpdate({
+        target: courses.id,
+        set: {
+          title: values.title,
+          description: values.description,
+          provider: values.provider,
+          category: values.category,
+          priceLabel: values.priceLabel,
+          rating: values.rating,
+          url: values.url,
+          imageUrl: values.imageUrl,
+          skills: values.skills,
+          workload: values.workload,
+          estimatedTime: values.estimatedTime,
+          certification: values.certification,
+          updatedAt: now,
+        } as any,
+      });
+  }
+
+  await persistDb();
 }
 
-export async function getCourseById(courseId: number) {
+export async function getCourses(limit = 20, offset = 0): Promise<DbCourseRecord[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(courses).limit(limit).offset(offset);
+  return rows.map(mapCourseRow);
+}
+
+export async function getCourseById(courseId: string): Promise<DbCourseRecord | undefined> {
   const db = await getDb();
   if (!db) return undefined;
   const result = await db.select().from(courses).where(eq(courses.id, courseId));
-  return result.length > 0 ? result[0] : undefined;
+  return result.length > 0 ? mapCourseRow(result[0]) : undefined;
 }
 
-export async function getRecommendedCourses(limit = 10) {
+export async function getCourseByUrl(url: string): Promise<DbCourseRecord | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(courses).where(eq(courses.url, url));
+  return result.length > 0 ? mapCourseRow(result[0]) : undefined;
+}
+
+export async function getCoursesByIds(ids: string[]): Promise<DbCourseRecord[]> {
+  if (ids.length === 0) return [];
   const db = await getDb();
   if (!db) return [];
-  return await db.select().from(courses)
-    .where(eq(courses.recommended_for_user, true))
-    .limit(limit);
+  const rows = await db.select().from(courses).where(inArray(courses.id, ids));
+  return rows.map(mapCourseRow);
 }
 
-export async function createCourse(data: any) {
+export async function touchCourseUpdated(courseId: string): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const result = await db.insert(courses).values(data);
-  return result;
+  await db
+    .update(courses)
+    .set({ updatedAt: new Date() })
+    .where(eq(courses.id, courseId));
+  await persistDb();
+}
+
+export async function saveCourseForUser(userId: number, courseId: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const now = new Date();
+  await db
+    .insert(saved_courses)
+    .values({
+      id: `${userId}-${courseId}`,
+      user_id: userId,
+      course_id: courseId,
+      createdAt: now,
+    })
+    .onConflictDoNothing();
+  await persistDb();
+}
+
+export async function removeSavedCourse(userId: number, courseId: string): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db
+    .delete(saved_courses)
+    .where(and(eq(saved_courses.user_id, userId), eq(saved_courses.course_id, courseId)));
+  await persistDb();
+}
+
+export async function listSavedCourses(userId: number): Promise<
+  Array<{
+    course: DbCourseRecord;
+    savedAt: Date;
+  }>
+> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({
+      course: courses,
+      savedAt: saved_courses.createdAt,
+    })
+    .from(saved_courses)
+    .innerJoin(courses, eq(courses.id, saved_courses.course_id))
+    .where(eq(saved_courses.user_id, userId))
+    .orderBy(desc(saved_courses.createdAt));
+
+  return rows.map((row) => ({
+    course: mapCourseRow(row.course),
+    savedAt: row.savedAt,
+  }));
+}
+
+export async function isCourseSaved(userId: number, courseId: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const rows = await db
+    .select({ id: saved_courses.id })
+    .from(saved_courses)
+    .where(and(eq(saved_courses.user_id, userId), eq(saved_courses.course_id, courseId)))
+    .limit(1);
+  return rows.length > 0;
+}
+
+export async function recordCourseRecommendations(
+  userId: number,
+  entries: Array<{ courseId: string; score: number | null }>,
+  options: { replace?: boolean } = {}
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  if (options.replace) {
+    await db.delete(course_recommendations).where(eq(course_recommendations.user_id, userId));
+  }
+
+  const now = new Date();
+  for (const entry of entries) {
+    await db
+      .insert(course_recommendations)
+      .values({
+        user_id: userId,
+        course_id: entry.courseId,
+        score: entry.score ?? null,
+        createdAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [course_recommendations.user_id, course_recommendations.course_id],
+        set: {
+          score: entry.score ?? null,
+          createdAt: now,
+        } as any,
+      });
+  }
+
+  await persistDb();
+}
+
+export async function getLatestCourseRecommendations(
+  userId: number,
+  limit = 10
+): Promise<Array<{ course: DbCourseRecord; score: number | null }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({
+      course: courses,
+      score: course_recommendations.score,
+      createdAt: course_recommendations.createdAt,
+    })
+    .from(course_recommendations)
+    .innerJoin(courses, eq(courses.id, course_recommendations.course_id))
+    .where(eq(course_recommendations.user_id, userId))
+    .orderBy(desc(course_recommendations.score), desc(course_recommendations.createdAt))
+    .limit(limit);
+
+  return rows.map((row) => ({
+    course: mapCourseRow(row.course),
+    score: row.score,
+  }));
+}
+
+export async function clearCourseRecommendations(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(course_recommendations).where(eq(course_recommendations.user_id, userId));
+  await persistDb();
 }
 
 // ===== SAVED JOBS =====
@@ -445,36 +787,29 @@ export async function updateUserProfile(userId: number, data: any) {
 // ===== STATISTICS =====
 export async function getUserStatistics(userId: number) {
   const db = await getDb();
-  if (!db) return { jobsViewed: 0, applications: 0, profileCompletion: 0, interviews: 0 };
-
-  const resumes = await db.select().from(submitted_resumes).where(eq(submitted_resumes.user_id, userId));
-  const profile = await getUserProfile(userId);
-
-  let profileCompletion = 0;
-  if (profile) {
-    let completed = 0;
-    if (profile.phone) completed++;
-    if (profile.cpf) completed++;
-    if (profile.location) completed++;
-    if (profile.work_modality) completed++;
-    if (profile.salary_expectation) completed++;
-    if (profile.resume_url) completed++;
-    profileCompletion = Math.round((completed / 6) * 100);
+  if (!db) {
+    return { jobsViewed: 0, applications: 0, applicationsToday: 0, profileCompletion: 0, interviews: 0 };
   }
 
-  // Contagem de "chamadas"/candidaturas por dia (hoje)
+  const resumes = await db.select().from(submitted_resumes).where(eq(submitted_resumes.user_id, userId));
+
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
-  const applicationsToday = resumes.filter(r => {
-    const ts = (r as any).createdAt instanceof Date ? (r as any).createdAt.getTime() : Number((r as any).createdAt);
-    return ts >= startOfToday.getTime();
+  const applicationsToday = resumes.filter((resume) => {
+    const createdAt =
+      (resume as any).createdAt instanceof Date
+        ? (resume as any).createdAt.getTime()
+        : Number((resume as any).createdAt);
+    return createdAt >= startOfToday.getTime();
   }).length;
 
   return {
-    jobsViewed: 0, // sem rastreamento de visualizações, manter 0 para não induzir erro
+    jobsViewed: 0,
     applications: resumes.length,
     applicationsToday,
-    profileCompletion,
-    interviews: 0, // sem rastreamento de entrevistas, manter 0
+    profileCompletion: 0,
+    interviews: 0,
   };
 }
+
+

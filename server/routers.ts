@@ -7,13 +7,15 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 
 import * as db from "./db";
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, type Message } from "./_core/llm";
 import { storagePut } from "./storage";
 import { isStrongPassword, getPasswordStrengthError } from "@shared/password";
 import { sdk } from "./_core/sdk";
 import { sanitizeAiText } from "./_core/text";
 import { searchAdzunaJobs } from "./_core/adzuna";
 import { generateResumePdf, getResumeCompletionStatus } from "./resume";
+import { getCourseDetail, recommendForUser } from "./modules/courses/service";
+import type { CourseDetailResponse } from "./modules/courses/types";
 
 const MAIA_SYSTEM_PROMPT = `Voce sera a MAIA, Minha Assistente Integradora Autonoma da plataforma Vaga Certa. Sua missao e ajudar pessoas a conquistar empregos de forma rapida, eficiente e personalizada.
 
@@ -62,6 +64,117 @@ Comporte-se como a MAIA. Toda resposta deve seguir as regras acima, manter o con
 
 Pergunta inicial sugerida:
 "Ola! Sou a MAIA, sua assistente de carreira. Para comecar, como posso te chamar e em qual area profissional voce quer atuar?"`;
+
+const COURSE_SUMMARY_CACHE_TTL_MS = 60 * 60 * 1000;
+const courseSummaryCache = new Map<string, { summary: string; timestamp: number }>();
+
+type ParsedCourseDetail = {
+  title?: string;
+  description?: string;
+  content?: string;
+  provider?: string;
+  pricing?: string;
+};
+
+const normalizeCourseText = (value?: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
+};
+
+const parseDetailDescription = (raw?: string): ParsedCourseDetail => {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    const data =
+      typeof parsed?.data === "object" && parsed.data !== null ? parsed.data : parsed;
+
+    if (typeof data === "object" && data !== null) {
+      const record = data as Record<string, unknown>;
+      const content = normalizeCourseText(record.content);
+      return {
+        title: normalizeCourseText(record.title),
+        description: normalizeCourseText(record.description),
+        content: content ? content.replace(/\r\n/g, "\n") : undefined,
+        provider:
+          normalizeCourseText(record.provider) ??
+          normalizeCourseText(record.author) ??
+          normalizeCourseText(record.platform),
+        pricing:
+          normalizeCourseText(record.pricing) ??
+          normalizeCourseText(record.priceLabel) ??
+          normalizeCourseText(record.price),
+      };
+    }
+  } catch {
+    // not a JSON payload
+  }
+
+  return { content: normalizeCourseText(raw) };
+};
+
+const toPlainCourseText = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  return value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+const buildCourseSummaryContext = (detail: CourseDetailResponse) => {
+  const parsed = parseDetailDescription(detail.sobre);
+  const fallbackCandidates = [parsed.description, parsed.content, detail.sobre];
+  let fallbackSummary = "Resumo indisponivel.";
+  for (const candidate of fallbackCandidates) {
+    const plain = toPlainCourseText(
+      typeof candidate === "string" ? candidate : undefined
+    );
+    if (plain) {
+      fallbackSummary = plain;
+      break;
+    }
+  }
+
+  const sections: string[] = [];
+  sections.push(`Titulo: ${detail.titulo}`);
+  sections.push(`Plataforma: ${parsed.provider ?? detail.plataforma}`);
+  const priceLabel = parsed.pricing ?? detail.preco;
+  if (priceLabel) sections.push(`Preco: ${priceLabel}`);
+  const carga = detail.cargaHoraria ?? detail.duracaoEstimada;
+  if (carga) sections.push(`Carga horaria: ${carga}`);
+  sections.push(
+    `Certificacao: ${detail.certificacao ? "disponivel" : "nao informada"}`
+  );
+  if (detail.habilidadesDesenvolvidas?.length) {
+    sections.push(
+      `Habilidades: ${detail.habilidadesDesenvolvidas.join(", ")}`
+    );
+  }
+  const description = toPlainCourseText(
+    parsed.description ?? parsed.content ?? detail.sobre
+  );
+  if (description) {
+    sections.push(`Descricao: ${description.slice(0, 1200)}`);
+  }
+
+  return {
+    promptContent: sections.join("\n"),
+    fallbackSummary,
+    parsed,
+  };
+};
+
+const truncateAndPolishSummary = (text: string): string => {
+  const cleaned = sanitizeAiText(text).trim();
+  if (!cleaned) {
+    return "Resumo indisponivel.";
+  }
+  if (cleaned.length === 1) return cleaned;
+  return /[.!?…]$/.test(cleaned) ? cleaned : `${cleaned}.`;
+};
 
 const normalizeCommand = (value: string): string =>
   value
@@ -381,29 +494,118 @@ export const appRouter = router({
       ),
 
     getById: publicProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.string() }))
       .query(async ({ input }) => db.getCourseById(input.id)),
 
-    getRecommended: publicProcedure
+    getRecommended: protectedProcedure
       .input(z.object({ limit: z.number().default(10) }).optional())
-      .query(async ({ input }) =>
-        db.getRecommendedCourses(input?.limit ?? 10)
-      ),
+      .query(async ({ ctx, input }) => {
+        const result = await recommendForUser(ctx.user.id, {
+          limit: input?.limit ?? 10,
+        });
+        return result.recommended;
+      }),
+
+    getSummary: publicProcedure
+      .input(
+        z
+          .object({
+            id: z.string(),
+            maxLength: z.number().min(80).max(480).optional(),
+          })
+      )
+      .query(async ({ input }) => {
+        const detail = await getCourseDetail(input.id);
+        if (!detail) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Curso nao encontrado",
+          });
+        }
+
+        const cached = courseSummaryCache.get(detail.id);
+        if (
+          cached &&
+          Date.now() - cached.timestamp < COURSE_SUMMARY_CACHE_TTL_MS
+        ) {
+          return { summary: cached.summary };
+        }
+
+        const { promptContent, fallbackSummary } =
+          buildCourseSummaryContext(detail);
+        const maxLength = Math.min(
+          Math.max(input.maxLength ?? 320, 120),
+          480
+        );
+
+        let summaryText = fallbackSummary;
+
+        if (promptContent.length) {
+          try {
+            const response = await invokeLLM({
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "Voce gera resumos curtos de cursos para usuarias brasileiras. Utilize portugues-BR, ate tres frases objetivas, sem listas ou markdown.",
+                },
+                {
+                  role: "user",
+                  content: `Crie um resumo envolvente de no maximo ${maxLength} caracteres para o curso abaixo, destacando objetivo, principais aprendizados e formato. Se faltar informacoes essenciais, responda 'Resumo indisponivel'.\n\n${promptContent}`,
+                },
+              ],
+            });
+            const candidate = sanitizeAiText(
+              String(response.choices?.[0]?.message?.content ?? "")
+            );
+            if (candidate) {
+              summaryText = candidate;
+            }
+          } catch (error) {
+            console.error(
+              `[Courses][summary] Failed to generate summary for ${detail.id}:`,
+              error
+            );
+          }
+        }
+
+        if (!summaryText || !summaryText.trim()) {
+          summaryText = fallbackSummary;
+        }
+
+        if (summaryText.length > maxLength) {
+          let truncated = summaryText.slice(0, maxLength).replace(/\s+\S*$/, "");
+          if (!truncated.trim()) {
+            truncated = summaryText.slice(0, maxLength);
+          }
+          summaryText = truncateAndPolishSummary(truncated);
+        } else {
+          summaryText = truncateAndPolishSummary(summaryText);
+        }
+
+        courseSummaryCache.set(detail.id, {
+          summary: summaryText,
+          timestamp: Date.now(),
+        });
+
+        return { summary: summaryText };
+      }),
 
     create: protectedProcedure
       .input(
         z.object({
           title: z.string(),
-          description: z.string().optional(),
-          skills: z.string().optional(),
-          duration_hours: z.number().optional(),
-          price: z.number().default(0),
-          is_free: z.boolean().default(true),
+          description: z.string().optional().nullable(),
+          provider: z.string().optional().nullable(),
+          category: z.string().optional().nullable(),
+          priceLabel: z.string().optional().nullable(),
+          rating: z.number().optional().nullable(),
+          url: z.string(),
+          imageUrl: z.string().optional().nullable(),
+          skills: z.array(z.string()).optional(),
+          workload: z.string().optional().nullable(),
+          estimatedTime: z.string().optional().nullable(),
           certification: z.boolean().default(false),
-          provider: z.string().optional(),
-          thumbnail: z.string().optional(),
-          external_url: z.string().optional(),
-          recommended_for_user: z.boolean().default(false),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -413,7 +615,24 @@ export const appRouter = router({
             message: "Somente administradores podem criar cursos",
           });
         }
-        return await db.createCourse(input);
+        await db.upsertCourses([
+          {
+            id: input.url,
+            title: input.title,
+            description: input.description ?? null,
+            provider: input.provider ?? "Manual",
+            category: input.category ?? null,
+            priceLabel: input.priceLabel ?? "Não informado",
+            rating: input.rating ?? null,
+            url: input.url,
+            imageUrl: input.imageUrl ?? null,
+            skills: input.skills ?? [],
+            workload: input.workload ?? null,
+            estimatedTime: input.estimatedTime ?? null,
+            certification: input.certification ?? false,
+          },
+        ]);
+        return { success: true };
       }),
   }),
 
@@ -522,8 +741,8 @@ export const appRouter = router({
 
         // Build context and call LLM
         const history = await db.getChatMessages(ctx.user.id, 10);
-        const llmMessages = history.map((entry) => ({
-          role: entry.sender === "user" ? "user" : ("assistant" as const),
+        const llmMessages: Message[] = history.map((entry) => ({
+          role: entry.sender === "user" ? "user" : "assistant",
           content: String(entry.content),
         }));
 
@@ -610,28 +829,67 @@ export const appRouter = router({
 
   // ===== STATISTICS & REPORTS =====
   statistics: router({
-    getUserStats: protectedProcedure.query(async ({ ctx }) =>
-      db.getUserStatistics(ctx.user.id)
-    ),
+    getUserStats: protectedProcedure.query(async ({ ctx }) => {
+      const stats = await db.getUserStatistics(ctx.user.id);
+      const resumeStatus = await getResumeCompletionStatus(ctx.user.id);
+      const profileCompletion =
+        typeof resumeStatus.completion === "number"
+          ? resumeStatus.completion
+          : resumeStatus.complete
+          ? 100
+          : stats.profileCompletion ?? 0;
+
+      return {
+        ...stats,
+        profileCompletion,
+        resumeStatus: {
+          completion: profileCompletion,
+          missing: resumeStatus.missing,
+          hasGenerated: resumeStatus.hasGenerated ?? false,
+        },
+      };
+    }),
 
     getReportData: protectedProcedure
       .input(z.object({ days: z.number().default(30) }).optional())
       .query(async ({ ctx, input }) => {
         const stats = await db.getUserStatistics(ctx.user.id);
+        const resumeStatus = await getResumeCompletionStatus(ctx.user.id);
+        const profileCompletion =
+          typeof resumeStatus.completion === "number"
+            ? resumeStatus.completion
+            : resumeStatus.complete
+            ? 100
+            : stats.profileCompletion ?? 0;
+        const statsWithCompletion = { ...stats, profileCompletion };
         const resumeCount = await db.getSubmittedResumeCount(
           ctx.user.id,
           input?.days ?? 30
         );
-        const recommendedCourses = await db.getRecommendedCourses(5);
+        const recommendedRaw = await db.getLatestCourseRecommendations(ctx.user.id, 5);
+        const recommendedCourses = recommendedRaw.map(({ course, score }) => ({
+          id: course.id,
+          title: course.title,
+          provider: course.provider,
+          priceLabel: course.priceLabel,
+          url: course.url,
+          score,
+        }));
 
         return {
           compatibility: Math.floor(Math.random() * 40) + 60,
           resumesSubmitted: resumeCount,
           recommendedCourses,
-          stats,
+          stats: statsWithCompletion,
+          resumeStatus: {
+            completion: profileCompletion,
+            missing: resumeStatus.missing,
+            hasGenerated: resumeStatus.hasGenerated ?? false,
+          },
         };
       }),
   }),
 });
 
 export type AppRouter = typeof appRouter;
+

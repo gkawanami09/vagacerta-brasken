@@ -1,260 +1,312 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { ChevronRight } from 'lucide-react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { useAuth } from '@/_core/hooks/useAuth';
-import { trpc } from '@/lib/trpc';
+import { useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
+
+const formatPhone = (value?: string | null) => {
+  if (!value) return "não informado";
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 11) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  }
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  }
+  return value;
+};
+
+const formatCpf = (value?: string | null) => {
+  if (!value) return "não informado";
+  const digits = value.replace(/\D/g, "");
+  if (digits.length !== 11) return value;
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+};
 
 export default function Settings() {
-  const { user, logout } = useAuth();
-  const { data: profile } = trpc.userProfile.get.useQuery();
-  const updateProfile = trpc.userProfile.update.useMutation();
-  const updateAccount = trpc.auth.updateAccount.useMutation();
+  const { user, profile, signOut, isLoading } = useAuth();
   const utils = trpc.useUtils();
 
-  const [openName, setOpenName] = useState(false);
-  const [openEmail, setOpenEmail] = useState(false);
-  const [openPhone, setOpenPhone] = useState(false);
-  const [openCpf, setOpenCpf] = useState(false);
-
-  const [nameVal, setNameVal] = useState('');
-  const [emailVal, setEmailVal] = useState('');
-  const [phoneVal, setPhoneVal] = useState('');
-  const [cpfVal, setCpfVal] = useState('');
-  const [formErr, setFormErr] = useState<string | null>(null);
-
-  const [notifications, setNotifications] = useState({
-    whatsapp: false,
-    push: false,
-    email: false,
+  const updateAccount = trpc.auth.updateAccount.useMutation();
+  const updateProfile = trpc.userProfile.update.useMutation({
+    onSuccess: () => utils.userProfile.get.invalidate(),
   });
 
+  const [preferences, setPreferences] = useState({
+    whatsapp: Boolean(profile?.notification_whatsapp ?? false),
+    push: Boolean(profile?.notification_push ?? false),
+    email: Boolean(profile?.notification_email ?? true),
+  });
+  const [isEditing, setIsEditing] = useState(false);
+  const [formData, setFormData] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    cpf: "",
+  });
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
   useEffect(() => {
-    setNotifications({
-      whatsapp: Boolean(profile?.notification_whatsapp),
-      push: Boolean(profile?.notification_push),
-      email: Boolean(profile?.notification_email),
+    setPreferences({
+      whatsapp: Boolean(profile?.notification_whatsapp ?? false),
+      push: Boolean(profile?.notification_push ?? false),
+      email: Boolean(profile?.notification_email ?? true),
     });
-  }, [profile?.notification_email, profile?.notification_push, profile?.notification_whatsapp]);
+  }, [
+    profile?.notification_whatsapp,
+    profile?.notification_push,
+    profile?.notification_email,
+  ]);
+
+  useEffect(() => {
+    if (isEditing) {
+      setFormData({
+        name: user?.name ?? "",
+        email: user?.email ?? "",
+        phone: profile?.phone ?? "",
+        cpf: profile?.cpf ?? "",
+      });
+      setSaveError(null);
+      setSaveSuccess(false);
+    }
+  }, [isEditing, user?.name, user?.email, profile?.phone, profile?.cpf]);
+
+  const accountData = useMemo(
+    () => [
+      { label: "Nome", value: user?.name ?? "não informado" },
+      { label: "Email", value: user?.email ?? "não informado" },
+      { label: "Telefone", value: formatPhone(profile?.phone) },
+      { label: "CPF", value: formatCpf(profile?.cpf) },
+    ],
+    [user?.name, user?.email, profile?.phone, profile?.cpf]
+  );
+
+  const handleSignOut = () => {
+    void signOut();
+  };
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = event.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSave = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaveError(null);
+    setSaveSuccess(false);
+
+    const accountUpdates: { name?: string; email?: string } = {};
+    const profileUpdates: { phone?: string; cpf?: string } = {};
+
+    const trimmedName = formData.name.trim();
+    if (trimmedName && trimmedName !== (user?.name ?? "")) {
+      accountUpdates.name = trimmedName;
+    }
+
+    const trimmedEmail = formData.email.trim().toLowerCase();
+    if (trimmedEmail && trimmedEmail !== (user?.email ?? "")) {
+      accountUpdates.email = trimmedEmail;
+    }
+
+    const phoneValue = formData.phone.trim();
+    if (phoneValue !== (profile?.phone ?? "")) {
+      profileUpdates.phone = phoneValue || undefined;
+    }
+
+    const digits = (value: string) => value.replace(/\D/g, "");
+    const currentCpfDigits = digits(profile?.cpf ?? "");
+    const newCpfDigits = digits(formData.cpf);
+    if (newCpfDigits && newCpfDigits !== currentCpfDigits) {
+      profileUpdates.cpf = newCpfDigits;
+    }
+    if (!newCpfDigits && currentCpfDigits) {
+      profileUpdates.cpf = undefined;
+    }
+
+    if (
+      Object.keys(accountUpdates).length === 0 &&
+      Object.keys(profileUpdates).length === 0
+    ) {
+      setIsEditing(false);
+      return;
+    }
+
+    try {
+      await Promise.all([
+        Object.keys(accountUpdates).length
+          ? updateAccount.mutateAsync(accountUpdates)
+          : Promise.resolve(),
+        Object.keys(profileUpdates).length
+          ? updateProfile.mutateAsync(profileUpdates)
+          : Promise.resolve(),
+      ]);
+      setSaveSuccess(true);
+      setIsEditing(false);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Falha ao atualizar dados";
+      setSaveError(message);
+    }
+  };
+
+  const isSaving = updateAccount.isPending || updateProfile.isPending;
 
   return (
-    <div className="min-h-screen bg-[#FAF9F4] pb-20">
-      <div className="bg-white border-b border-[#E6E2D9] sticky top-0 z-40 px-4 py-4">
+    <div className="min-h-screen bg-[#FAF9F4] pb-16">
+      <header className="bg-white border-b border-[#E6E2D9] sticky top-0 z-10 px-4 py-4">
         <h1 className="text-2xl font-bold text-[#75182C]">Configurações</h1>
-      </div>
+      </header>
 
-      <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
-        <div className="bg-[#FFFDF5] rounded-[16px] shadow-[0_4px_12px_rgba(0,0,0,0.12)] p-6">
-          <h2 className="text-lg font-semibold text-[#1C1C1C] mb-4">Dados Pessoais</h2>
-          <div className="space-y-3">
-            <button
-              type="button"
-              onClick={() => { setNameVal(user?.name || ''); setFormErr(null); setOpenName(true); }}
-              className="w-full flex justify-between items-center p-3 border-b border-[#E6E2D9] text-left hover:bg-[#F5F5F5] rounded"
-            >
-              <div><p className="font-medium text-[#1C1C1C]">Nome</p><p className="text-sm text-[#5A5A5A]">{user?.name || '—'}</p></div>
-              <ChevronRight size={20} className="text-[#75182C]" />
-            </button>
-            <button
-              type="button"
-              onClick={() => { setEmailVal(user?.email || ''); setFormErr(null); setOpenEmail(true); }}
-              className="w-full flex justify-between items-center p-3 border-b border-[#E6E2D9] text-left hover:bg-[#F5F5F5] rounded"
-            >
-              <div><p className="font-medium text-[#1C1C1C]">Email</p><p className="text-sm text-[#5A5A5A]">{user?.email || '—'}</p></div>
-              <ChevronRight size={20} className="text-[#75182C]" />
-            </button>
-            <button
-              type="button"
-              onClick={() => { setPhoneVal(profile?.phone || ''); setFormErr(null); setOpenPhone(true); }}
-              className="w-full flex justify-between items-center p-3 text-left hover:bg-[#F5F5F5] rounded"
-            >
-              <div><p className="font-medium text-[#1C1C1C]">Telefone</p><p className="text-sm text-[#5A5A5A]">{profile?.phone || '—'}</p></div>
-              <ChevronRight size={20} className="text-[#75182C]" />
-            </button>
-            <button
-              type="button"
-              onClick={() => { setCpfVal(profile?.cpf || ''); setFormErr(null); setOpenCpf(true); }}
-              className="w-full flex justify-between items-center p-3 text-left hover:bg-[#F5F5F5] rounded"
-            >
-              <div><p className="font-medium text-[#1C1C1C]">CPF</p><p className="text-sm text-[#5A5A5A]">{profile?.cpf || '—'}</p></div>
-              <ChevronRight size={20} className="text-[#75182C]" />
-            </button>
-          </div>
-        </div>
+      <main className="max-w-4xl mx-auto px-4 py-8 space-y-8 text-[#1C1C1C]">
+        <section className="bg-[#FFFDF5] border border-[#E6E2D9] rounded-[16px] p-6 shadow-sm">
+          <h2 className="text-lg font-semibold mb-2">Dados da conta</h2>
+          <p className="text-sm text-[#5A5A5A] mb-4">
+            Estes dados são exibidos apenas para você. Ajuste conforme necessário.
+          </p>
 
-        <div className="bg-[#FFFDF5] rounded-[16px] shadow-[0_4px_12px_rgba(0,0,0,0.12)] p-6">
-          <h2 className="text-lg font-semibold text-[#1C1C1C] mb-4">Notificações</h2>
-          <div className="space-y-3">
-            {([
-              ['whatsapp', 'WhatsApp'],
-              ['push', 'Push'],
-              ['email', 'Email'],
-            ] as const).map(([key, label]) => (
-              <div key={key} className="flex items-center justify-between p-3 border-b border-[#E6E2D9] last:border-b-0">
-                <p className="capitalize text-[#1C1C1C] font-medium">{label}</p>
+          {isLoading ? (
+            <div className="space-y-3">
+              {[1, 2, 3, 4].map((item) => (
+                <div key={item} className="h-4 bg-[#E6E2D9] rounded-full animate-pulse w-1/2" />
+              ))}
+            </div>
+          ) : isEditing ? (
+            <form onSubmit={handleSave} className="space-y-4 text-sm">
+              <div>
+                <label className="block font-semibold mb-1" htmlFor="name">
+                  Nome
+                </label>
                 <input
-                  type="checkbox"
-                  checked={notifications[key]}
-                  onChange={async () => {
-                    const next = { ...notifications, [key]: !notifications[key] } as typeof notifications;
-                    setNotifications(next);
-                    try {
-                      await updateProfile.mutateAsync({
-                        notification_whatsapp: next.whatsapp,
-                        notification_push: next.push,
-                        notification_email: next.email,
-                      });
-                    } catch {}
-                  }}
-                  className="w-5 h-5"
+                  id="name"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleInputChange}
+                  className="w-full border border-[#E6E2D9] rounded-[12px] px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#75182C33]"
                 />
               </div>
-            ))}
-          </div>
-        </div>
+              <div>
+                <label className="block font-semibold mb-1" htmlFor="email">
+                  Email
+                </label>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  value={formData.email}
+                  onChange={handleInputChange}
+                  className="w-full border border-[#E6E2D9] rounded-[12px] px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#75182C33]"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1" htmlFor="phone">
+                  Telefone
+                </label>
+                <input
+                  id="phone"
+                  name="phone"
+                  value={formData.phone}
+                  onChange={handleInputChange}
+                  placeholder="(11) 99999-9999"
+                  className="w-full border border-[#E6E2D9] rounded-[12px] px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#75182C33]"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1" htmlFor="cpf">
+                  CPF
+                </label>
+                <input
+                  id="cpf"
+                  name="cpf"
+                  value={formData.cpf}
+                  onChange={handleInputChange}
+                  placeholder="000.000.000-00"
+                  className="w-full border border-[#E6E2D9] rounded-[12px] px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#75182C33]"
+                />
+              </div>
 
-        <div className="bg-[#FFFDF5] rounded-[16px] shadow-[0_4px_12px_rgba(0,0,0,0.12)] p-6">
-          <h2 className="text-lg font-semibold text-[#1C1C1C] mb-4">Privacidade e Segurança</h2>
-          <div className="space-y-3">
-            <button className="w-full p-3 border-b border-[#E6E2D9] text-left hover:bg-[#F0F0F0] rounded transition-colors">
-              <p className="font-medium text-[#1C1C1C]">Alterar Senha</p>
-            </button>
-            <button className="w-full p-3 border-b border-[#E6E2D9] text-left hover:bg-[#F0F0F0] rounded transition-colors">
-              <p className="font-medium text-[#1C1C1C]">Baixar Dados</p>
-            </button>
-            <button onClick={() => logout()} className="w-full p-3 text-left hover:bg-[#F0F0F0] rounded transition-colors">
-              <p className="font-medium text-[#D32F2F]">Sair da Conta</p>
-            </button>
-          </div>
-        </div>
+              {saveError ? (
+                <p className="text-sm text-red-600">{saveError}</p>
+              ) : null}
+              {saveSuccess ? (
+                <p className="text-sm text-[#2E7D32]">
+                  Dados atualizados com sucesso.
+                </p>
+              ) : null}
 
-        <div className="bg-[#FFFDF5] rounded-[16px] shadow-[0_4px_12px_rgba(0,0,0,0.12)] p-6">
-          <h2 className="text-lg font-semibold text-[#1C1C1C] mb-4">Sobre</h2>
-          <div className="space-y-2 text-[#5A5A5A]">
-            <p>Versão: 1.0.0</p>
-            <p className="text-sm">© 2024 Vaga Certa. Todos os direitos reservados.</p>
-          </div>
-        </div>
-      </div>
+              <div className="flex flex-wrap gap-3">
+                <Button type="submit" disabled={isSaving}>
+                  {isSaving ? "Salvando..." : "Salvar"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={isSaving}
+                  onClick={() => setIsEditing(false)}
+                >
+                  Cancelar
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <div className="space-y-3 text-sm">
+                {accountData.map((item) => (
+                  <div key={item.label}>
+                    <p className="font-semibold">{item.label}</p>
+                    <p className="text-[#4A4046]">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+              {saveSuccess ? (
+                <p className="text-sm text-[#2E7D32] mt-4">
+                  Dados atualizados com sucesso.
+                </p>
+              ) : null}
+              <div className="mt-6 flex flex-wrap gap-3">
+                <Button variant="outline" onClick={() => setIsEditing(true)}>
+                  Editar dados
+                </Button>
+                <Button variant="ghost" onClick={handleSignOut}>
+                  Sair da conta
+                </Button>
+              </div>
+            </>
+          )}
+        </section>
 
-      {/* Edit Name */}
-      <Dialog open={openName} onOpenChange={setOpenName}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Atualizar nome</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 mt-2">
-            <Label htmlFor="name">Nome</Label>
-            <Input id="name" value={nameVal} onChange={e => setNameVal(e.target.value)} />
-            {formErr && <p className="text-sm text-red-600">{formErr}</p>}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenName(false)}>Cancelar</Button>
-            <Button onClick={async () => {
-              const v = nameVal.trim();
-              if (!v) { setFormErr('Nome inválido'); return; }
-              await updateAccount.mutateAsync({ name: v });
-              await utils.auth.me.invalidate();
-              setOpenName(false);
-            }}>Salvar</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        <section className="bg-[#FFFDF5] border border-[#E6E2D9] rounded-[16px] p-6 shadow-sm space-y-4">
+          <h2 className="text-lg font-semibold">Notificações</h2>
+          <p className="text-sm text-[#5A5A5A]">
+            Escolha como prefere receber alertas de vagas e atualizações da MAIA.
+          </p>
+          {(["whatsapp", "push", "email"] as const).map((channel) => (
+            <label
+              key={channel}
+              className="flex items-center justify-between py-3 border-b border-[#E6E2D9] last:border-b-0 capitalize"
+            >
+              <span>{channel}</span>
+              <input
+                type="checkbox"
+                checked={preferences[channel]}
+                onChange={(event) =>
+                  setPreferences((prev) => ({ ...prev, [channel]: event.target.checked }))
+                }
+                className="w-5 h-5 text-[#75182C]"
+              />
+            </label>
+          ))}
+        </section>
 
-      {/* Edit Email */}
-      <Dialog open={openEmail} onOpenChange={setOpenEmail}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Atualizar email</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 mt-2">
-            <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" value={emailVal} onChange={e => setEmailVal(e.target.value)} />
-            {formErr && <p className="text-sm text-red-600">{formErr}</p>}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenEmail(false)}>Cancelar</Button>
-            <Button onClick={async () => {
-              const v = emailVal.trim().toLowerCase();
-              const ok = /.+@.+\..+/.test(v);
-              if (!ok) { setFormErr('Email inválido'); return; }
-              try {
-                setFormErr(null);
-                await updateAccount.mutateAsync({ email: v });
-                await utils.auth.me.invalidate();
-                setOpenEmail(false);
-              } catch (e: any) {
-                setFormErr(e?.message || 'Falha ao atualizar email');
-              }
-            }}>Salvar</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit Phone */}
-      <Dialog open={openPhone} onOpenChange={setOpenPhone}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Atualizar telefone</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 mt-2">
-            <Label htmlFor="phone">Telefone</Label>
-            <Input id="phone" type="tel" value={phoneVal} onChange={e => setPhoneVal(e.target.value)} placeholder="(11) 99999-9999" />
-            {formErr && <p className="text-sm text-red-600">{formErr}</p>}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenPhone(false)}>Cancelar</Button>
-            <Button onClick={async () => {
-              const digits = (s: string) => s.replace(/\D/g, '');
-              const d = digits(phoneVal);
-              if (d.length < 10 || d.length > 11) { setFormErr('Telefone inválido'); return; }
-              try {
-                setFormErr(null);
-                await updateProfile.mutateAsync({ phone: phoneVal.trim() });
-                setOpenPhone(false);
-              } catch (e:any) {
-                setFormErr(e?.message || 'Falha ao atualizar telefone');
-              }
-            }}>Salvar</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit CPF */}
-      <Dialog open={openCpf} onOpenChange={setOpenCpf}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Atualizar CPF</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 mt-2">
-            <Label htmlFor="cpf">CPF</Label>
-            <Input id="cpf" value={cpfVal} onChange={e => setCpfVal(e.target.value)} placeholder="000.000.000-00" />
-            {formErr && <p className="text-sm text-red-600">{formErr}</p>}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenCpf(false)}>Cancelar</Button>
-            <Button onClick={async () => {
-              const digits = (s: string) => s.replace(/\D/g, '');
-              const d = digits(cpfVal);
-              if (d.length !== 11) { setFormErr('CPF inválido'); return; }
-              try {
-                setFormErr(null);
-                await updateProfile.mutateAsync({ cpf: d });
-                setOpenCpf(false);
-              } catch (e:any) {
-                setFormErr(e?.message || 'Falha ao atualizar CPF');
-              }
-            }}>Salvar</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        <section className="bg-[#FFFDF5] border border-[#E6E2D9] rounded-[16px] p-6 shadow-sm">
+          <h2 className="text-lg font-semibold mb-2">Privacidade</h2>
+          <p className="text-sm text-[#5A5A5A] leading-relaxed">
+            Tratamos seus dados com confidencialidade. Atualize suas preferencias de privacidade quando quiser.
+          </p>
+          <Button variant="outline" className="mt-4">
+            Preferencias de privacidade
+          </Button>
+        </section>
+      </main>
     </div>
   );
-}
-
-// Dialogs
-export function SettingsDialogs() {
-  return null;
 }

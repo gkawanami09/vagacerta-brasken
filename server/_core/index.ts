@@ -10,6 +10,7 @@ import { serveStatic, setupVite } from "./vite";
 import path from "path";
 import { registerAiStreamRoutes } from "./aiStream";
 import { registerLlmDiagRoutes } from "./llmDiag";
+import { registerCoursesRoutes } from "../modules/courses/routes";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -44,6 +45,8 @@ async function startServer() {
   registerAiStreamRoutes(app);
   // LLM diagnostics
   registerLlmDiagRoutes(app);
+  // Courses REST API
+  registerCoursesRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",

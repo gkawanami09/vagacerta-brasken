@@ -1,10 +1,11 @@
 import { useState } from 'react';
+import { useLocation } from 'wouter';
 import { trpc } from '@/lib/trpc';
 import { Button } from '@/components/ui/button';
-import { ChevronDown } from 'lucide-react';
 
 export default function ReportsDetail() {
   const [selectedDays, setSelectedDays] = useState(30);
+  const [, setLocation] = useLocation();
   
   // Fetch report data from backend
   const { data: reportData, isLoading } = trpc.statistics.getReportData.useQuery({ days: selectedDays });
@@ -87,17 +88,21 @@ export default function ReportsDetail() {
                     <div key={course.id} className="bg-white rounded-[14px] border border-[#E6E2D9] p-4 flex items-center justify-between hover:shadow-[0_4px_12px_rgba(0,0,0,0.12)] transition-shadow">
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-2">
-                          <span className="text-xs font-bold bg-[#75182C] text-white px-2 py-1 rounded">RECOMENDADO</span>
+                          <span className="text-xs font-bold bg-[#75182C] text-white px-2 py-1 rounded">
+                            {course.categoria}
+                          </span>
                         </div>
-                        <h3 className="font-bold text-[#1C1C1C] mb-1">{course.title}</h3>
-                        <p className="text-sm text-[#5A5A5A] line-clamp-2">{course.description}</p>
+                        <h3 className="font-bold text-[#1C1C1C] mb-1">{course.titulo}</h3>
+                        <p className="text-sm text-[#5A5A5A] line-clamp-2">{course.descricaoResumo ?? ""}</p>
                       </div>
-                      {course.thumbnail && (
+                      {course.imagem && (
                         <div className="ml-4 flex-shrink-0">
-                          <img src={course.thumbnail ?? undefined} alt={course.title} className="w-24 h-24 rounded-lg object-cover" />
+                          <img src={course.imagem} alt={course.titulo} className="w-24 h-24 rounded-lg object-cover" />
                         </div>
                       )}
-                      <Button className="ml-4 bg-[#75182C] text-white">Ver curso</Button>
+                      <Button className="ml-4 bg-[#75182C] text-white" onClick={() => setLocation(`/course-detail?id=${encodeURIComponent(String(course.id))}`)}>
+                        Ver curso
+                      </Button>
                     </div>
                   ))
                 ) : (

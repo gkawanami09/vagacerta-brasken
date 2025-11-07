@@ -461,19 +461,6 @@ async function invokeGemini(params: InvokeParams): Promise<InvokeResult> {
   }
   const hint = tried.length ? ` (tentativas: ${tried.join(", ")})` : "";
   throw new Error(String(lastError?.message || lastError || "Gemini invoke failed") + hint);
-
-  return {
-    id: data?.requestId ?? "gemini-response",
-    created: Math.floor(Date.now() / 1000),
-    model: modelName,
-    choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content: text },
-        finish_reason: null,
-      },
-    ],
-  };
 }
 
 const normalizeResponseFormat = ({

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * Core user table backing auth flow.
@@ -61,18 +61,19 @@ export type InsertJob = typeof jobs.$inferInsert;
  * Courses table
  */
 export const courses = sqliteTable("courses", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+  id: text("id").primaryKey(),
   title: text("title").notNull(),
   description: text("description"),
-  skills: text("skills"), // JSON array of skills
-  duration_hours: integer("duration_hours"),
-  price: integer("price"), // 0 for free
-  is_free: integer("is_free", { mode: "boolean" }).default(true),
+  provider: text("provider").notNull(),
+  category: text("category"),
+  priceLabel: text("price_label").notNull(),
+  rating: real("rating"),
+  url: text("url").notNull().unique(),
+  imageUrl: text("image_url"),
+  skills: text("skills").notNull().default("[]"),
+  workload: text("workload"),
+  estimatedTime: text("estimated_time"),
   certification: integer("certification", { mode: "boolean" }).default(false),
-  provider: text("provider"),
-  thumbnail: text("thumbnail"),
-  external_url: text("external_url"),
-  recommended_for_user: integer("recommended_for_user", { mode: "boolean" }).default(false),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(new Date()),
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(new Date()),
 });
@@ -92,6 +93,46 @@ export const saved_jobs = sqliteTable("saved_jobs", {
 
 export type SavedJob = typeof saved_jobs.$inferSelect;
 export type InsertSavedJob = typeof saved_jobs.$inferInsert;
+
+export const saved_courses = sqliteTable(
+  "saved_courses",
+  {
+    id: text("id").primaryKey(),
+    user_id: integer("user_id").notNull(),
+    course_id: text("course_id")
+      .notNull()
+      .references(() => courses.id),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(new Date()),
+  },
+  (table) => ({
+    userCourseUnique: uniqueIndex("idx_saved_course_user_course").on(table.user_id, table.course_id),
+  })
+);
+
+export type SavedCourse = typeof saved_courses.$inferSelect;
+export type InsertSavedCourse = typeof saved_courses.$inferInsert;
+
+export const course_recommendations = sqliteTable(
+  "course_recommendations",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    user_id: integer("user_id").notNull(),
+    course_id: text("course_id")
+      .notNull()
+      .references(() => courses.id),
+    score: real("score"),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(new Date()),
+  },
+  (table) => ({
+    userCourseUnique: uniqueIndex("idx_course_recommendations_user_course").on(
+      table.user_id,
+      table.course_id
+    ),
+  })
+);
+
+export type CourseRecommendation = typeof course_recommendations.$inferSelect;
+export type InsertCourseRecommendation = typeof course_recommendations.$inferInsert;
 
 /**
  * Submitted resumes/Currículos enviados
@@ -148,4 +189,3 @@ export const user_profiles = sqliteTable("user_profiles", {
 
 export type UserProfile = typeof user_profiles.$inferSelect;
 export type InsertUserProfile = typeof user_profiles.$inferInsert;
-

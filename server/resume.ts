@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
+import type * as PDFKit from "pdfkit";
 import https from "https";
 
 import * as db from "./db";
@@ -79,6 +80,56 @@ const SOFT_KEYWORDS = [
   "inteligencia emocional",
 ];
 
+type PdfFonts = {
+  regular: string;
+  bold: string;
+  italic: string;
+};
+
+const FONT_DIR = path.resolve(process.cwd(), "assets", "fonts");
+const FONT_NAMES = {
+  regular: "Manrope-Regular",
+  bold: "Manrope-Bold",
+  italic: "Manrope-Italic",
+} as const;
+
+const FONT_FILES = {
+  regular: path.join(FONT_DIR, "Manrope-Regular.ttf"),
+  bold: path.join(FONT_DIR, "Manrope-Bold.ttf"),
+  italic: path.join(FONT_DIR, "Manrope-Italic.ttf"),
+} as const;
+
+const FONT_URLS = {
+  regular: "https://github.com/google/fonts/raw/main/ofl/manrope/Manrope-Regular.ttf",
+  bold: "https://github.com/google/fonts/raw/main/ofl/manrope/Manrope-Bold.ttf",
+  italic: "https://github.com/google/fonts/raw/main/ofl/manrope/Manrope-Italic.ttf",
+} as const;
+
+const FALLBACK_FONTS: PdfFonts = {
+  regular: "Helvetica",
+  bold: "Helvetica-Bold",
+  italic: "Helvetica-Oblique",
+};
+
+const FONT_SIZES = {
+  NAME: 26,
+  HEADLINE: 13,
+  CONTACT: 9,
+  BODY: 10,
+  SUB_TITLE: 12,
+  SECTION_TITLE: 13,
+} as const;
+
+const RESUME_COMPLETION_FIELDS = [
+  "nome",
+  "email",
+  "telefone",
+  "localizacao",
+  "resumo",
+  "habilidades",
+  "formacao",
+  "experiencias",
+] as const;
 // FunÃƒÂ§ÃƒÂµes Auxiliares (mantidas)
 const sanitize = (value: string | null | undefined): string =>
   sanitizeAiText(String(value ?? ""));
@@ -92,6 +143,9 @@ const hasContent = (value: unknown): boolean => {
 async function extractFromChat(userId: number): Promise<ResumeData | null> {
   try {
     const messages = await db.getChatMessages(userId, 40);
+    if (!messages.length || !messages.some((msg) => msg.sender === "user")) {
+      return null;
+    }
     const transcript = messages
       .map((msg) => `${msg.sender === "user" ? "Usuario" : "MAIA"}: ${msg.content}`)
       .join("\n");
@@ -175,6 +229,44 @@ const splitSkills = (skills: string[] = []): { technical: string[]; soft: string
   return { technical, soft };
 };
 
+async function downloadFont(url: string, destination: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const file = fs.createWriteStream(destination);
+    const request = https.get(url, (response) => {
+      if (response.statusCode && response.statusCode >= 400) {
+        file.close(() => {
+          fs.promises.unlink(destination).catch(() => {});
+          reject(new Error(`Falha ao baixar fonte (${response.statusCode})`));
+        });
+        return;
+      }
+      response.pipe(file);
+      file.on("finish", () => file.close(() => resolve()));
+    });
+    request.on("error", (error) => {
+      file.close(() => {
+        fs.promises.unlink(destination).catch(() => {});
+        reject(error);
+      });
+    });
+  });
+}
+
+async function ensureUtf8Fonts(): Promise<void> {
+  await fs.promises.mkdir(FONT_DIR, { recursive: true });
+  const tasks: Promise<void>[] = [];
+  (Object.keys(FONT_FILES) as Array<keyof typeof FONT_FILES>).forEach((key) => {
+    const filePath = FONT_FILES[key];
+    if (!fs.existsSync(filePath)) {
+      const url = FONT_URLS[key];
+      tasks.push(downloadFont(url, filePath));
+    }
+  });
+  if (tasks.length) {
+    await Promise.allSettled(tasks);
+  }
+}
+
 const buildFallbackExperience = (exp: ResumeExperience): EnhancedExperience => {
   const empresa = sanitize(exp.empresa || "");
   const cargo = sanitize(exp.cargo || "Experiencia");
@@ -243,7 +335,7 @@ const COLORS = {
   LINE: "#D1D5DB",
 };
 
-const drawSectionTitle = (doc: PDFDocument, title: string, fonts: PdfFonts) => {
+const drawSectionTitle = (doc: PDFKit.PDFDocument, title: string, fonts: PdfFonts) => {
   doc.moveDown(0.8);
   doc
     .font(fonts.bold)
@@ -263,7 +355,7 @@ const drawSectionTitle = (doc: PDFDocument, title: string, fonts: PdfFonts) => {
   doc.moveDown(0.5);
 };
 
-const drawBulletList = (doc: PDFDocument, items: string[], fonts: PdfFonts) => {
+const drawBulletList = (doc: PDFKit.PDFDocument, items: string[], fonts: PdfFonts) => {
   const usableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const originX = doc.page.margins.left;
   const bulletX = originX + 6;
@@ -292,7 +384,7 @@ const drawBulletList = (doc: PDFDocument, items: string[], fonts: PdfFonts) => {
   doc.moveDown(0.3);
 };
 
-const drawTwoColumnList = (doc: PDFDocument, left: string[], right: string[], fonts: PdfFonts) => {
+const drawTwoColumnList = (doc: PDFKit.PDFDocument, left: string[], right: string[], fonts: PdfFonts) => {
   const availableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right - 24;
   const columnWidth = availableWidth / 2;
   const startLeft = doc.page.margins.left;
@@ -366,7 +458,7 @@ export async function generateResumePdf(
 
   const dir = path.resolve(process.cwd(), "uploads", "resumes", String(userId));
   await fs.promises.mkdir(dir, { recursive: true });
-  const filename = ${Date.now()}-curriculo.pdf;
+  const filename = `${Date.now()}-curriculo.pdf`;
   const filepath = path.join(dir, filename);
 
   const doc = new PDFDocument({ margin: 54, size: "A4" });
@@ -375,14 +467,18 @@ export async function generateResumePdf(
 
   let fonts: PdfFonts = { ...FALLBACK_FONTS };
   try {
-    doc.registerFont(FONT_NAMES.regular, FONT_FILES.regular);
-    doc.registerFont(FONT_NAMES.bold, FONT_FILES.bold);
-    doc.registerFont(FONT_NAMES.italic, FONT_FILES.italic);
-    fonts = {
-      regular: FONT_NAMES.regular,
-      bold: FONT_NAMES.bold,
-      italic: FONT_NAMES.italic,
-    };
+    if (fs.existsSync(FONT_FILES.regular)) {
+      doc.registerFont(FONT_NAMES.regular, FONT_FILES.regular);
+      fonts.regular = FONT_NAMES.regular;
+    }
+    if (fs.existsSync(FONT_FILES.bold)) {
+      doc.registerFont(FONT_NAMES.bold, FONT_FILES.bold);
+      fonts.bold = FONT_NAMES.bold;
+    }
+    if (fs.existsSync(FONT_FILES.italic)) {
+      doc.registerFont(FONT_NAMES.italic, FONT_FILES.italic);
+      fonts.italic = FONT_NAMES.italic;
+    }
   } catch (error) {
     console.warn("[Resume] Usando fontes padrao (Helvetica):", error);
   }
@@ -557,13 +653,17 @@ export async function generateResumePdf(
   }
 
   if (opts?.job?.requirements) {
+    const rawRequirements = sanitize(opts.job.requirements).replace(/\s+/g, " ").trim();
+    const requirementsLine = rawRequirements.length
+      ? `Requisitos principais: ${rawRequirements}. `
+      : "";
     drawSectionTitle(doc, "Aderência à Vaga", fonts);
     doc
       .font(fonts.italic)
       .fontSize(FONT_SIZES.BODY)
       .fillColor(COLORS.SECONDARY)
       .text(
-        Requisitos principais: . Currículo preparado para realçar competências técnicas e comportamentais aderentes.,
+        `${requirementsLine}Currículo preparado para destacar competências técnicas e comportamentais aderentes.`,
         {
           lineGap: 4,
           align: "justify",
@@ -578,9 +678,18 @@ export async function generateResumePdf(
     stream.on("close", resolve);
   });
 
+  try {
+    const { publishResumeGenerated } = await import("./modules/courses/service");
+    publishResumeGenerated(userId).catch((error) =>
+      console.warn("[Resume] Falha ao disparar recomendacoes de cursos:", error)
+    );
+  } catch (error) {
+    console.warn("[Resume] Nao foi possivel carregar modulo de cursos:", error);
+  }
+
   return {
     path: filepath,
-    url: /uploads/resumes//,
+    url: `/uploads/resumes/${userId}/${filename}`,
     filename,
   };
 }
@@ -602,7 +711,31 @@ export function getMissingResumeFields(data: ResumeData): string[] {
 export async function getResumeCompletionStatus(userId: number) {
   const data = (await extractFromChat(userId)) || {};
   const missing = getMissingResumeFields(data);
-  return { complete: missing.length === 0, missing, data };
+  const normalizedMissing = new Set(
+    missing.map((item) => {
+      const lower = item.toLowerCase();
+      if (lower.includes("resumo") || lower.includes("objetivo")) return "resumo";
+      return lower;
+    })
+  );
+
+  const totalFields = RESUME_COMPLETION_FIELDS.length;
+  const filledFields = Math.max(0, totalFields - normalizedMissing.size);
+  let completion = totalFields > 0 ? Math.round((filledFields / totalFields) * 100) : 0;
+
+  const submitted = await db.getSubmittedResumes(userId);
+  const hasGenerated = submitted.some((resume) => resume.status === "generated");
+  if (hasGenerated) completion = 100;
+
+  return {
+    complete: hasGenerated || normalizedMissing.size === 0,
+    missing,
+    data,
+    completion,
+    totalFields,
+    filledFields,
+    hasGenerated,
+  };
 }
 // Versao reforcada para garantir texto detalhado e profissional
 async function enrichResumeStrong(data: ResumeData): Promise<EnhancedResume | null> {
@@ -654,3 +787,5 @@ ${payload}`;
     return null;
   }
 }
+
+
