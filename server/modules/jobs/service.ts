@@ -15,6 +15,7 @@ import * as db from "../../db";
 import { generateResumePdf } from "../../resume";
 import type {
   JobCardDTO,
+  JobCompanySummary,
   JobDetailDTO,
   NormalizedJob,
   RecommendedJobDTO,
@@ -268,17 +269,19 @@ export async function searchAndIngest(options: SearchAndIngestOptions = {}) {
   return upserted;
 }
 
+const buildCompanySummary = (company?: JobCompany | null): JobCompanySummary => ({
+  id: company?.id ?? undefined,
+  name: company?.name ?? "Empresa não informada",
+  logoUrl: company?.logoUrl ?? undefined,
+  website: company?.website ?? null,
+});
+
 const mapToCard = (
   row: JobListing & { company?: JobCompany | null; match?: JobMatch | null }
 ): JobCardDTO => ({
   id: row.id,
   title: row.title,
-  company: {
-    id: row.company?.id ?? undefined,
-    name: row.company?.name ?? "Empresa não informada",
-    logoUrl: row.company?.logoUrl ?? undefined,
-    website: row.company?.website ?? null,
-  },
+  company: buildCompanySummary(row.company ?? undefined),
   location: row.location ?? null,
   remote: Boolean(row.remote),
   salaryLabel:
@@ -395,12 +398,7 @@ const mapToDetail = (
 ): JobDetailDTO => ({
   id: row.id,
   title: row.title,
-  company: {
-    id: row.company?.id ?? undefined,
-    name: row.company?.name ?? "Empresa não informada",
-    logoUrl: row.company?.logoUrl ?? undefined,
-    website: row.company?.website ?? null,
-  },
+  company: buildCompanySummary(row.company ?? undefined),
   location: row.location ?? null,
   remote: Boolean(row.remote),
   salaryMin: row.salaryMin ?? null,

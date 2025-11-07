@@ -1,12 +1,14 @@
+export type JobCompanySummary = {
+  id?: string;
+  name: string;
+  logoUrl?: string | null;
+  website?: string | null;
+};
+
 export type JobCardDTO = {
   id: string;
   title: string;
-  company: {
-    id?: string;
-    name: string;
-    logoUrl?: string;
-    website?: string | null;
-  };
+  company: JobCompanySummary;
   location?: string | null;
   remote: boolean;
   salaryLabel?: string | null;
@@ -32,12 +34,7 @@ export type SimilarJobDTO = {
 export type JobDetailDTO = {
   id: string;
   title: string;
-  company: {
-    id?: string;
-    name: string;
-    logoUrl?: string;
-    website?: string | null;
-  };
+  company: JobCompanySummary;
   location?: string | null;
   remote: boolean;
   salaryMin?: number | null;
